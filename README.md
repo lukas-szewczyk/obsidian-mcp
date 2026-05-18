@@ -1,3 +1,5 @@
+# WIP :) 
+
 # obsidian-mcp
 
 MCP server for an Obsidian vault, implemented in Rust with `rmcp` and the
