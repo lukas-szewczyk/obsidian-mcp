@@ -202,12 +202,17 @@ pub struct SearchNotesResponse {
 impl ObsidianMcp {
     pub fn from_env() -> Result<Self, String> {
         let path = env::var_os("OBSIDIAN_VAULT_PATH")
-            .ok_or("Set OBSIDIAN_VAULT_PATH to the Obsidian vault directory")?;
-        Self::new(PathBuf::from(path))
+            .map(PathBuf::from)
+            .unwrap_or_else(Self::default_vault_path);
+        Self::new(path)
     }
 
     pub fn new(vault: impl Into<PathBuf>) -> Result<Self, String> {
         Self::with_runner(vault, RealObsidianCli::from_env())
+    }
+
+    pub fn default_vault_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("obsidian-vault")
     }
 
     fn with_runner<R>(vault: impl Into<PathBuf>, cli: R) -> Result<Self, String>
@@ -835,6 +840,18 @@ mod tests {
                 vec!["vault", "info=name"],
                 vec!["files", "ext=md", "total"],
             ]
+        );
+    }
+
+    #[test]
+    fn default_vault_path_points_to_project_vault() {
+        let path = ObsidianMcp::default_vault_path();
+
+        assert!(path.ends_with("obsidian-vault"));
+        assert!(
+            path.is_dir(),
+            "expected project vault to exist at {}",
+            path.display()
         );
     }
 
