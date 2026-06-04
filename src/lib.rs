@@ -128,12 +128,128 @@ impl VaultRelativePath {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DailyDate {
+    year: u16,
+    month: u8,
+    day: u8,
+}
+
+impl DailyDate {
+    fn parse(raw_date: &str) -> AppResult<Self> {
+        let date = raw_date.trim();
+        if date.len() != 10 {
+            return Err(ObsidianMcpError::InvalidInput(
+                "date must use YYYY-MM-DD format".to_string(),
+            ));
+        }
+
+        let bytes = date.as_bytes();
+        if bytes[4] != b'-'
+            || bytes[7] != b'-'
+            || !bytes[..4].iter().all(u8::is_ascii_digit)
+            || !bytes[5..7].iter().all(u8::is_ascii_digit)
+            || !bytes[8..].iter().all(u8::is_ascii_digit)
+        {
+            return Err(ObsidianMcpError::InvalidInput(
+                "date must use YYYY-MM-DD format".to_string(),
+            ));
+        }
+
+        let year = date[..4]
+            .parse::<u16>()
+            .map_err(|_| ObsidianMcpError::InvalidInput("date year is not valid".to_string()))?;
+        let month = date[5..7]
+            .parse::<u8>()
+            .map_err(|_| ObsidianMcpError::InvalidInput("date month is not valid".to_string()))?;
+        let day = date[8..]
+            .parse::<u8>()
+            .map_err(|_| ObsidianMcpError::InvalidInput("date day is not valid".to_string()))?;
+
+        if month == 0 || month > 12 {
+            return Err(ObsidianMcpError::InvalidInput(
+                "date month is not valid".to_string(),
+            ));
+        }
+
+        let max_day = days_in_month(year, month);
+        if day == 0 || day > max_day {
+            return Err(ObsidianMcpError::InvalidInput(
+                "date day is not valid".to_string(),
+            ));
+        }
+
+        Ok(Self { year, month, day })
+    }
+
+    fn next(&self) -> Self {
+        let max_day = days_in_month(self.year, self.month);
+        if self.day < max_day {
+            return Self {
+                year: self.year,
+                month: self.month,
+                day: self.day + 1,
+            };
+        }
+
+        if self.month < 12 {
+            Self {
+                year: self.year,
+                month: self.month + 1,
+                day: 1,
+            }
+        } else {
+            Self {
+                year: self.year + 1,
+                month: 1,
+                day: 1,
+            }
+        }
+    }
+
+    fn note_path(&self) -> AppResult<VaultRelativePath> {
+        VaultRelativePath::markdown(&format!("{self}.md"))
+    }
+}
+
+impl fmt::Display for DailyDate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{:04}-{:02}-{:02}",
+            self.year, self.month, self.day
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskLine(usize);
+
+impl TaskLine {
+    fn parse(line: usize) -> AppResult<Self> {
+        if line == 0 {
+            return Err(ObsidianMcpError::InvalidInput(
+                "task line must be greater than zero".to_string(),
+            ));
+        }
+
+        Ok(Self(line))
+    }
+
+    fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ObsidianResourceUri {
     VaultInfo,
     NotesIndex,
     TagsIndex,
     DailyToday,
+    Daily(DailyDate),
+    TasksOpen,
+    ProjectsIndex,
     Note(VaultRelativePath),
     Backlinks(VaultRelativePath),
 }
@@ -143,6 +259,9 @@ impl ObsidianResourceUri {
     const NOTES_INDEX: &'static str = "obsidian://notes/index";
     const TAGS_INDEX: &'static str = "obsidian://tags/index";
     const DAILY_TODAY: &'static str = "obsidian://daily/today";
+    const DAILY_PREFIX: &'static str = "obsidian://daily/";
+    const TASKS_OPEN: &'static str = "obsidian://tasks/open";
+    const PROJECTS_INDEX: &'static str = "obsidian://projects/index";
     const NOTE_PREFIX: &'static str = "obsidian://note/";
     const BACKLINKS_PREFIX: &'static str = "obsidian://backlinks/";
 
@@ -152,6 +271,8 @@ impl ObsidianResourceUri {
             Self::NOTES_INDEX => Ok(Self::NotesIndex),
             Self::TAGS_INDEX => Ok(Self::TagsIndex),
             Self::DAILY_TODAY => Ok(Self::DailyToday),
+            Self::TASKS_OPEN => Ok(Self::TasksOpen),
+            Self::PROJECTS_INDEX => Ok(Self::ProjectsIndex),
             _ => {
                 if let Some(encoded_path) = uri.strip_prefix(Self::NOTE_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
@@ -159,6 +280,8 @@ impl ObsidianResourceUri {
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::BACKLINKS_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Backlinks(VaultRelativePath::markdown(&decoded_path)?))
+                } else if let Some(date) = uri.strip_prefix(Self::DAILY_PREFIX) {
+                    Ok(Self::Daily(DailyDate::parse(date)?))
                 } else {
                     Err(ObsidianMcpError::ResourceNotFound(format!(
                         "Unsupported Obsidian resource URI: {uri}"
@@ -174,6 +297,10 @@ impl ObsidianResourceUri {
             Self::NOTE_PREFIX,
             percent_encode_uri_path(&path.as_cli_arg())
         )
+    }
+
+    fn daily(date: &DailyDate) -> String {
+        format!("{}{date}", Self::DAILY_PREFIX)
     }
 
     fn backlinks(path: &VaultRelativePath) -> String {
@@ -378,6 +505,42 @@ pub struct AppendDailyNoteRequest {
     pub inline: Option<bool>,
 }
 
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadDailyRangeRequest {
+    pub from: String,
+    pub to: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListTasksRequest {
+    pub path: Option<String>,
+    pub daily: Option<bool>,
+    pub completed: Option<bool>,
+    pub status: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct AppendTaskRequest {
+    pub path: Option<String>,
+    pub daily: Option<bool>,
+    pub text: String,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct CompleteTaskRequest {
+    pub path: String,
+    pub line: usize,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListProjectsRequest {
+    pub directory: Option<String>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct VaultInfoResponse {
     pub configured_vault_path: String,
@@ -442,6 +605,62 @@ pub struct ReadDailyNoteResponse {
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct AppendDailyNoteResponse {
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct DailyNoteEntry {
+    pub date: String,
+    pub path: String,
+    pub content: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ReadDailyRangeResponse {
+    pub from: String,
+    pub to: String,
+    pub notes: Vec<DailyNoteEntry>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct TaskItem {
+    pub status: String,
+    pub text: String,
+    pub path: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListTasksResponse {
+    pub path: Option<String>,
+    pub daily: bool,
+    pub completed: Option<bool>,
+    pub status: Option<String>,
+    pub tasks: Vec<TaskItem>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct AppendTaskResponse {
+    pub target: String,
+    pub task: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct CompleteTaskResponse {
+    pub path: String,
+    pub line: usize,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListProjectsResponse {
+    pub directory: String,
+    pub projects: Vec<String>,
+    pub count: usize,
 }
 
 impl ObsidianMcp {
@@ -661,6 +880,11 @@ impl ObsidianMcp {
         self.run_cli(ObsidianCommand::new("daily:read")).await
     }
 
+    async fn read_daily_note_for_date(&self, date: &DailyDate) -> AppResult<String> {
+        let path = date.note_path()?;
+        self.read_note_content_at(&path).await
+    }
+
     pub async fn append_daily_note_content(
         &self,
         content: &str,
@@ -682,12 +906,167 @@ impl ObsidianMcp {
         Ok("Appended to daily note".to_string())
     }
 
+    pub async fn read_daily_range_data(
+        &self,
+        from: &str,
+        to: &str,
+        limit: Option<usize>,
+    ) -> AppResult<Vec<DailyNoteEntry>> {
+        let from = DailyDate::parse(from)?;
+        let to = DailyDate::parse(to)?;
+        if from > to {
+            return Err(ObsidianMcpError::InvalidInput(
+                "from date must be before or equal to to date".to_string(),
+            ));
+        }
+
+        let limit = clamp_limit(limit, 7, 31);
+        let mut entries = Vec::new();
+        let mut current = from;
+        while current <= to && entries.len() < limit {
+            let path = current.note_path()?;
+            let path_text = path.as_cli_arg();
+            let date_text = current.to_string();
+            let entry = match self.read_note_content_at(&path).await {
+                Ok(content) => DailyNoteEntry {
+                    date: date_text,
+                    path: path_text,
+                    content: Some(content),
+                    error: None,
+                },
+                Err(error) => DailyNoteEntry {
+                    date: date_text,
+                    path: path_text,
+                    content: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            entries.push(entry);
+            current = current.next();
+        }
+
+        Ok(entries)
+    }
+
+    pub async fn list_tasks_data(
+        &self,
+        path: Option<&str>,
+        daily: bool,
+        completed: Option<bool>,
+        status: Option<&str>,
+        limit: Option<usize>,
+    ) -> AppResult<Vec<TaskItem>> {
+        if daily && path.is_some() {
+            return Err(ObsidianMcpError::InvalidInput(
+                "daily and path cannot both be set for list_tasks".to_string(),
+            ));
+        }
+
+        let path = path.map(VaultRelativePath::markdown).transpose()?;
+        let status = status.map(validate_task_status).transpose()?;
+        let mut command = ObsidianCommand::new("tasks").parameter("format", "tsv");
+        if let Some(path) = &path {
+            command = command.parameter("path", path.as_cli_arg());
+        }
+        if daily {
+            command = command.flag("daily");
+        }
+        if let Some(completed) = completed {
+            command = command.flag(if completed { "done" } else { "todo" });
+        }
+        if let Some(status) = status {
+            command = command.parameter("status", status.to_string());
+        }
+
+        let mut tasks = parse_tasks_tsv(&self.run_cli(command).await?)?;
+        tasks.truncate(clamp_limit(limit, 100, 1_000));
+        Ok(tasks)
+    }
+
+    pub async fn append_task_data(
+        &self,
+        path: Option<&str>,
+        daily: bool,
+        text: &str,
+    ) -> AppResult<(String, String)> {
+        let task = format_task_line(text)?;
+        if daily {
+            self.run_cli(
+                ObsidianCommand::new("daily:append").parameter("content", encode_cli_text(&task)),
+            )
+            .await?;
+            return Ok(("daily".to_string(), task));
+        }
+
+        let Some(path) = path else {
+            return Err(ObsidianMcpError::InvalidInput(
+                "path is required unless daily=true".to_string(),
+            ));
+        };
+        let path = VaultRelativePath::markdown(path)?;
+        self.run_cli(
+            ObsidianCommand::new("append")
+                .parameter("path", path.as_cli_arg())
+                .parameter("content", encode_cli_text(&task)),
+        )
+        .await?;
+
+        Ok((path.as_cli_arg(), task))
+    }
+
+    pub async fn complete_task_data(
+        &self,
+        path: &str,
+        line: usize,
+        status: Option<&str>,
+    ) -> AppResult<String> {
+        let path = VaultRelativePath::markdown(path)?;
+        let line = TaskLine::parse(line)?;
+        let mut command = ObsidianCommand::new("task")
+            .parameter("path", path.as_cli_arg())
+            .parameter("line", line.as_usize().to_string());
+        let status = match status {
+            Some(status) => {
+                let status = validate_task_status(status)?;
+                command = command.parameter("status", status.to_string());
+                status.to_string()
+            }
+            None => {
+                command = command.flag("done");
+                "x".to_string()
+            }
+        };
+
+        self.run_cli(command).await?;
+        Ok(status)
+    }
+
+    pub async fn list_project_note_paths(
+        &self,
+        directory: Option<&str>,
+        limit: Option<usize>,
+    ) -> AppResult<(String, Vec<String>)> {
+        let directory = directory
+            .map(str::trim)
+            .filter(|directory| !directory.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(project_directory_from_env);
+        let directory = VaultRelativePath::parse(&directory)?;
+        let projects = self
+            .list_note_paths(Some(&directory.as_cli_arg()), limit)
+            .await?;
+
+        Ok((directory.as_cli_arg(), projects))
+    }
+
     pub async fn list_resource_descriptors(&self) -> AppResult<Vec<Resource>> {
         let mut resources = vec![
             vault_info_resource(),
             notes_index_resource(),
             tags_index_resource(),
             daily_today_resource(),
+            tasks_open_resource(),
+            projects_index_resource(),
         ];
         for note in self.list_note_paths(None, Some(200)).await? {
             let path = VaultRelativePath::markdown(&note)?;
@@ -708,6 +1087,11 @@ impl ObsidianMcp {
                 .with_title("Obsidian backlinks")
                 .with_description("Read backlinks for a Markdown note by vault-relative path.")
                 .with_mime_type("text/plain")
+                .no_annotation(),
+            RawResourceTemplate::new("obsidian://daily/{date}", "obsidian_daily_by_date")
+                .with_title("Obsidian daily note")
+                .with_description("Read a daily note by YYYY-MM-DD date.")
+                .with_mime_type("text/markdown")
                 .no_annotation(),
         ]
     }
@@ -731,6 +1115,22 @@ impl ObsidianMcp {
             ObsidianResourceUri::DailyToday => {
                 let content = self.read_daily_note_content().await?;
                 ResourceContents::text(content, uri).with_mime_type("text/markdown")
+            }
+            ObsidianResourceUri::Daily(date) => {
+                let content = self.read_daily_note_for_date(&date).await?;
+                ResourceContents::text(content, ObsidianResourceUri::daily(&date))
+                    .with_mime_type("text/markdown")
+            }
+            ObsidianResourceUri::TasksOpen => {
+                let tasks = self
+                    .list_tasks_data(None, false, Some(false), None, Some(1_000))
+                    .await?;
+                ResourceContents::text(format_tasks_resource(&tasks), uri)
+                    .with_mime_type("text/plain")
+            }
+            ObsidianResourceUri::ProjectsIndex => {
+                let (_, projects) = self.list_project_note_paths(None, Some(1_000)).await?;
+                ResourceContents::text(projects.join("\n"), uri).with_mime_type("text/plain")
             }
             ObsidianResourceUri::Note(path) => {
                 let content = self.read_note_content_at(&path).await?;
@@ -811,6 +1211,33 @@ impl ObsidianMcp {
                 )]),
             )
             .with_title("Backlink review"),
+            Prompt::new(
+                "weekly_review",
+                Some("Review daily notes and open tasks for a date range."),
+                Some(vec![
+                    required_prompt_argument("from", "Start date in YYYY-MM-DD format."),
+                    required_prompt_argument("to", "End date in YYYY-MM-DD format."),
+                ]),
+            )
+            .with_title("Weekly review"),
+            Prompt::new(
+                "project_review",
+                Some("Review one project note together with backlinks and open tasks."),
+                Some(vec![required_prompt_argument(
+                    "path",
+                    "Vault-relative Markdown path for the project note.",
+                )]),
+            )
+            .with_title("Project review"),
+            Prompt::new(
+                "inbox_triage",
+                Some("Triage open tasks and inbox-like notes into next actions."),
+                Some(vec![optional_prompt_argument(
+                    "directory",
+                    "Optional vault-relative inbox directory to inspect.",
+                )]),
+            )
+            .with_title("Inbox triage"),
         ]
     }
 
@@ -890,6 +1317,58 @@ impl ObsidianMcp {
                     ),
                 )])
                 .with_description("Review backlinks for one note."))
+            }
+            "weekly_review" => {
+                let from = DailyDate::parse(&required_prompt_string(&request, "from")?)?;
+                let to = DailyDate::parse(&required_prompt_string(&request, "to")?)?;
+                if from > to {
+                    return Err(ObsidianMcpError::InvalidInput(
+                        "from date must be before or equal to to date".to_string(),
+                    ));
+                }
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Use `read_daily_range` from `{from}` to `{to}` and `list_tasks` with `completed=false`. Review commitments, unfinished tasks, recurring themes, stale items, and a short next-week plan. Read relevant `obsidian://note/{{path}}` resources when task context is unclear. Do not modify the vault."
+                    ),
+                )])
+                .with_description("Review daily notes and open tasks for a date range."))
+            }
+            "project_review" => {
+                let path = required_prompt_string(&request, "path")?;
+                let normalized_path = VaultRelativePath::markdown(&path)?;
+                let note_uri = ObsidianResourceUri::note(&normalized_path);
+                let backlinks_uri = ObsidianResourceUri::backlinks(&normalized_path);
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Read project note `{note_uri}`, backlinks `{backlinks_uri}`, and use `list_tasks` filtered to `{}`. Summarize current state, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
+                        normalized_path.as_cli_arg()
+                    ),
+                )])
+                .with_description("Review one project note."))
+            }
+            "inbox_triage" => {
+                let directory = optional_prompt_string(&request, "directory")
+                    .filter(|directory| !directory.trim().is_empty());
+                let directory_instruction = directory
+                    .as_deref()
+                    .map(|directory| {
+                        format!(
+                            " Also call `list_notes` with directory `{directory}` and read likely inbox notes."
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        " Also inspect `obsidian://tasks/open` for task inbox candidates."
+                            .to_string()
+                    });
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Use `list_tasks` with `completed=false` to triage open work.{directory_instruction} Group items into next actions, waiting, projects, someday, and unclear. Draft suggested note/task updates, but do not call write or append tools until the user approves exact text."
+                    ),
+                )])
+                .with_description("Triage open tasks and inbox-like notes."))
             }
             _ => Err(ObsidianMcpError::ResourceNotFound(format!(
                 "Unknown Obsidian prompt: {}",
@@ -1168,6 +1647,141 @@ impl ObsidianMcp {
             .map_err(error_message)?;
         Ok(Json(AppendDailyNoteResponse { message }))
     }
+
+    #[tool(
+        description = "Read daily notes for an inclusive YYYY-MM-DD date range, returning per-note errors for missing notes.",
+        annotations(
+            title = "Read daily range",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn read_daily_range(
+        &self,
+        Parameters(ReadDailyRangeRequest { from, to, limit }): Parameters<ReadDailyRangeRequest>,
+    ) -> Result<Json<ReadDailyRangeResponse>, String> {
+        let notes = self
+            .read_daily_range_data(&from, &to, limit)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ReadDailyRangeResponse {
+            from,
+            to,
+            count: notes.len(),
+            notes,
+        }))
+    }
+
+    #[tool(
+        description = "List Markdown tasks, optionally filtered by note path, daily note, completion state, or status character.",
+        annotations(
+            title = "List tasks",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_tasks(
+        &self,
+        Parameters(ListTasksRequest {
+            path,
+            daily,
+            completed,
+            status,
+            limit,
+        }): Parameters<ListTasksRequest>,
+    ) -> Result<Json<ListTasksResponse>, String> {
+        let daily = daily.unwrap_or(false);
+        let tasks = self
+            .list_tasks_data(path.as_deref(), daily, completed, status.as_deref(), limit)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ListTasksResponse {
+            path,
+            daily,
+            completed,
+            status,
+            count: tasks.len(),
+            tasks,
+        }))
+    }
+
+    #[tool(
+        description = "Append a new Markdown todo task to one note or to today's daily note.",
+        annotations(
+            title = "Append task",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn append_task(
+        &self,
+        Parameters(AppendTaskRequest { path, daily, text }): Parameters<AppendTaskRequest>,
+    ) -> Result<Json<AppendTaskResponse>, String> {
+        let (target, task) = self
+            .append_task_data(path.as_deref(), daily.unwrap_or(false), &text)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(AppendTaskResponse {
+            message: format!("Appended task to {target}"),
+            target,
+            task,
+        }))
+    }
+
+    #[tool(
+        description = "Mark a Markdown task as complete by note path and line number, or set an explicit status character.",
+        annotations(
+            title = "Complete task",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn complete_task(
+        &self,
+        Parameters(CompleteTaskRequest { path, line, status }): Parameters<CompleteTaskRequest>,
+    ) -> Result<Json<CompleteTaskResponse>, String> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+        let status = self
+            .complete_task_data(&normalized_path.as_cli_arg(), line, status.as_deref())
+            .await
+            .map_err(error_message)?;
+        Ok(Json(CompleteTaskResponse {
+            path: normalized_path.as_cli_arg(),
+            line,
+            status,
+            message: "Updated task".to_string(),
+        }))
+    }
+
+    #[tool(
+        description = "List project notes under the configured or provided vault-relative projects directory.",
+        annotations(
+            title = "List projects",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_projects(
+        &self,
+        Parameters(ListProjectsRequest { directory, limit }): Parameters<ListProjectsRequest>,
+    ) -> Result<Json<ListProjectsResponse>, String> {
+        let (directory, projects) = self
+            .list_project_note_paths(directory.as_deref(), limit)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ListProjectsResponse {
+            directory,
+            count: projects.len(),
+            projects,
+        }))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1257,6 +1871,107 @@ fn safe_directory(directory: Option<&str>) -> AppResult<Option<VaultRelativePath
     }
 }
 
+fn project_directory_from_env() -> String {
+    env::var("OBSIDIAN_PROJECTS_PATH")
+        .ok()
+        .map(|directory| directory.trim().to_string())
+        .filter(|directory| !directory.is_empty())
+        .unwrap_or_else(|| "Projects".to_string())
+}
+
+fn validate_task_status(status: &str) -> AppResult<char> {
+    let status = status.trim();
+    let mut chars = status.chars();
+    let Some(status) = chars.next() else {
+        return Err(ObsidianMcpError::InvalidInput(
+            "task status cannot be empty".to_string(),
+        ));
+    };
+    if chars.next().is_some() {
+        return Err(ObsidianMcpError::InvalidInput(
+            "task status must be a single character".to_string(),
+        ));
+    }
+
+    Ok(status)
+}
+
+fn format_task_line(text: &str) -> AppResult<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ObsidianMcpError::InvalidInput(
+            "task text cannot be empty".to_string(),
+        ));
+    }
+    if text.contains('\n') || text.contains('\r') {
+        return Err(ObsidianMcpError::InvalidInput(
+            "task text must be a single line".to_string(),
+        ));
+    }
+
+    if text.starts_with("- [") {
+        Ok(text.to_string())
+    } else {
+        Ok(format!("- [ ] {text}"))
+    }
+}
+
+fn parse_tasks_tsv(output: &str) -> AppResult<Vec<TaskItem>> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(parse_task_tsv_line)
+        .collect()
+}
+
+fn parse_task_tsv_line(line: &str) -> AppResult<TaskItem> {
+    let mut tail = line.rsplitn(3, '\t');
+    let line_number = tail.next().unwrap_or_default();
+    let path = tail.next().unwrap_or_default();
+    let head = tail.next().unwrap_or_default();
+    let Some((status, text)) = head.split_once('\t') else {
+        return Err(ObsidianMcpError::Parse(format!(
+            "Cannot parse task row from Obsidian CLI output: {}",
+            truncate_error(line)
+        )));
+    };
+    let line = line_number.parse::<usize>().map_err(|_| {
+        ObsidianMcpError::Parse(format!(
+            "Cannot parse task line number from Obsidian CLI output: {}",
+            truncate_error(line)
+        ))
+    })?;
+
+    Ok(TaskItem {
+        status: status.to_string(),
+        text: text.to_string(),
+        path: path.to_string(),
+        line,
+    })
+}
+
+fn format_tasks_resource(tasks: &[TaskItem]) -> String {
+    tasks
+        .iter()
+        .map(|task| format!("{}:{}\t{}", task.path, task.line, task.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: u16) -> bool {
+    year.is_multiple_of(4) && !year.is_multiple_of(100) || year.is_multiple_of(400)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VaultMetadata {
     name: String,
@@ -1331,6 +2046,25 @@ fn daily_today_resource() -> Resource {
         .with_description("Markdown contents of today's Obsidian daily note.")
         .with_mime_type("text/markdown")
         .no_annotation()
+}
+
+fn tasks_open_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::TASKS_OPEN, "obsidian_tasks_open")
+        .with_title("Open Obsidian tasks")
+        .with_description("Open Markdown tasks with vault-relative path and line references.")
+        .with_mime_type("text/plain")
+        .no_annotation()
+}
+
+fn projects_index_resource() -> Resource {
+    RawResource::new(
+        ObsidianResourceUri::PROJECTS_INDEX,
+        "obsidian_projects_index",
+    )
+    .with_title("Obsidian projects index")
+    .with_description("Markdown project notes under the configured projects directory.")
+    .with_mime_type("text/plain")
+    .no_annotation()
 }
 
 fn note_resource(path: &VaultRelativePath) -> Resource {
@@ -1600,6 +2334,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn daily_dates_and_task_lines_validate_workflow_inputs() {
+        let leap_day = DailyDate::parse("2024-02-29").unwrap();
+        assert_eq!(leap_day.to_string(), "2024-02-29");
+        assert_eq!(leap_day.next().to_string(), "2024-03-01");
+        assert_eq!(
+            DailyDate::parse("2026-02-29").unwrap_err().to_string(),
+            "date day is not valid"
+        );
+        assert_eq!(
+            TaskLine::parse(0).unwrap_err().to_string(),
+            "task line must be greater than zero"
+        );
+        assert_eq!(
+            validate_task_status("xx").unwrap_err().to_string(),
+            "task status must be a single character"
+        );
+        assert_eq!(format_task_line("Call bank").unwrap(), "- [ ] Call bank");
+        assert_eq!(
+            format_task_line("- [ ] Already formatted").unwrap(),
+            "- [ ] Already formatted"
+        );
+    }
+
+    #[test]
+    fn parses_task_tsv_rows_with_references() {
+        let tasks = parse_tasks_tsv(
+            " \t- [ ] Review inbox\tTodo.md\t4\nx\t- [x] Ship change\tProjects/Rust.md\t12\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                TaskItem {
+                    status: " ".to_string(),
+                    text: "- [ ] Review inbox".to_string(),
+                    path: "Todo.md".to_string(),
+                    line: 4,
+                },
+                TaskItem {
+                    status: "x".to_string(),
+                    text: "- [x] Ship change".to_string(),
+                    path: "Projects/Rust.md".to_string(),
+                    line: 12,
+                },
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn uses_cli_for_notes_workflow() {
         let vault = TestVault::new();
@@ -1780,6 +2564,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uses_cli_for_work_system_tasks_daily_range_and_projects() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([
+            Ok(" \t- [ ] Review inbox\tTodo.md\t4\n"),
+            Ok("appended"),
+            Ok("daily appended"),
+            Ok("updated"),
+            Ok("# Monday\n"),
+            Err("missing"),
+            Ok("Projects/Home.md\nProjects/Rust.md\nimage.png\n"),
+        ]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+        let tasks = server
+            .list_tasks_data(None, false, Some(false), None, Some(10))
+            .await
+            .unwrap();
+        let (target, task) = server
+            .append_task_data(Some("Todo.md"), false, "Review inbox")
+            .await
+            .unwrap();
+        let (daily_target, daily_task) = server
+            .append_task_data(None, true, "- [ ] Daily follow up")
+            .await
+            .unwrap();
+        let status = server.complete_task_data("Todo.md", 4, None).await.unwrap();
+        let daily_notes = server
+            .read_daily_range_data("2026-06-01", "2026-06-02", Some(10))
+            .await
+            .unwrap();
+        let (project_directory, projects) = server
+            .list_project_note_paths(Some("Projects"), Some(10))
+            .await
+            .unwrap();
+
+        assert_eq!(tasks[0].path, "Todo.md");
+        assert_eq!(tasks[0].line, 4);
+        assert_eq!(target, "Todo.md");
+        assert_eq!(task, "- [ ] Review inbox");
+        assert_eq!(daily_target, "daily");
+        assert_eq!(daily_task, "- [ ] Daily follow up");
+        assert_eq!(status, "x");
+        assert_eq!(daily_notes[0].content.as_deref(), Some("# Monday\n"));
+        assert!(
+            daily_notes[1]
+                .error
+                .as_deref()
+                .is_some_and(|error| error == "missing")
+        );
+        assert_eq!(project_directory, "Projects");
+        assert_eq!(projects, vec!["Projects/Home.md", "Projects/Rust.md"]);
+        assert_eq!(
+            cli.calls()
+                .iter()
+                .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![
+                vec!["tasks", "format=tsv", "todo"],
+                vec!["append", "path=Todo.md", "content=- [ ] Review inbox"],
+                vec!["daily:append", "content=- [ ] Daily follow up"],
+                vec!["task", "path=Todo.md", "line=4", "done"],
+                vec!["read", "path=2026-06-01.md"],
+                vec!["read", "path=2026-06-02.md"],
+                vec!["files", "ext=md", "folder=Projects"],
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn vault_info_uses_cli_metadata_and_total_count() {
         let vault = TestVault::new();
         let cli = FakeObsidianCli::new([
@@ -1860,6 +2713,8 @@ mod tests {
         assert!(uris.contains(&"obsidian://notes/index"));
         assert!(uris.contains(&"obsidian://tags/index"));
         assert!(uris.contains(&"obsidian://daily/today"));
+        assert!(uris.contains(&"obsidian://tasks/open"));
+        assert!(uris.contains(&"obsidian://projects/index"));
         assert!(uris.contains(&"obsidian://note/Projects/Rust.md"));
         assert!(uris.contains(&"obsidian://note/Space%20Note.md"));
         assert!(uris.contains(&"obsidian://backlinks/Projects/Rust.md"));
@@ -1874,11 +2729,13 @@ mod tests {
 
         let templates = server.list_resource_template_descriptors();
 
-        assert_eq!(templates.len(), 2);
+        assert_eq!(templates.len(), 3);
         assert_eq!(templates[0].uri_template, "obsidian://note/{path}");
         assert_eq!(templates[0].mime_type.as_deref(), Some("text/markdown"));
         assert_eq!(templates[1].uri_template, "obsidian://backlinks/{path}");
         assert_eq!(templates[1].mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(templates[2].uri_template, "obsidian://daily/{date}");
+        assert_eq!(templates[2].mime_type.as_deref(), Some("text/markdown"));
     }
 
     #[tokio::test]
@@ -1967,6 +2824,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn read_work_system_resources() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([
+            Ok(" \t- [ ] Review inbox\tTodo.md\t4\n"),
+            Ok("Projects/Home.md\nProjects/Rust.md\n"),
+            Ok("# Dated daily\n"),
+        ]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+        let tasks = server
+            .read_resource_uri("obsidian://tasks/open")
+            .await
+            .unwrap();
+        let projects = server
+            .read_resource_uri("obsidian://projects/index")
+            .await
+            .unwrap();
+        let daily = server
+            .read_resource_uri("obsidian://daily/2026-06-04")
+            .await
+            .unwrap();
+
+        assert_resource_text_contains(&tasks, "Todo.md:4\t- [ ] Review inbox");
+        assert_resource_text_contains(&projects, "Projects/Home.md\nProjects/Rust.md");
+        assert_resource_text_contains(&daily, "# Dated daily");
+        assert_eq!(
+            cli.calls()
+                .iter()
+                .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![
+                vec!["tasks", "format=tsv", "todo"],
+                vec!["files", "ext=md", "folder=Projects"],
+                vec!["read", "path=2026-06-04.md"],
+            ]
+        );
+    }
+
     #[test]
     fn resource_uri_round_trips_percent_encoded_note_paths() {
         let path = VaultRelativePath::markdown("Folder/Space Note.md").unwrap();
@@ -2000,7 +2896,10 @@ mod tests {
                 "draft_note_update",
                 "daily_review",
                 "tag_overview",
-                "backlink_review"
+                "backlink_review",
+                "weekly_review",
+                "project_review",
+                "inbox_triage"
             ]
         );
 
@@ -2031,6 +2930,27 @@ mod tests {
             ))
             .unwrap();
         assert_prompt_text_contains(&backlinks, "obsidian://backlinks/Projects/Rust.md");
+
+        let weekly = server
+            .get_prompt_result(prompt_request(
+                "weekly_review",
+                [("from", "2026-06-01"), ("to", "2026-06-07")],
+            ))
+            .unwrap();
+        assert_prompt_text_contains(&weekly, "read_daily_range");
+
+        let project = server
+            .get_prompt_result(prompt_request(
+                "project_review",
+                [("path", "Projects/Rust.md")],
+            ))
+            .unwrap();
+        assert_prompt_text_contains(&project, "obsidian://note/Projects/Rust.md");
+
+        let inbox = server
+            .get_prompt_result(prompt_request("inbox_triage", [("directory", "Inbox")]))
+            .unwrap();
+        assert_prompt_text_contains(&inbox, "list_notes");
     }
 
     #[test]
