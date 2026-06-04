@@ -26,6 +26,89 @@ trait ObsidianCliRunner: std::fmt::Debug + Send + Sync {
     fn run<'a>(&'a self, vault: &'a Path, args: Vec<OsString>) -> CliFuture<'a>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VaultRelativePath(PathBuf);
+
+impl VaultRelativePath {
+    fn parse(raw_path: &str) -> Result<Self, String> {
+        let normalized = raw_path.trim().replace('\\', "/");
+        if normalized.is_empty() {
+            return Err("path cannot be empty".to_string());
+        }
+
+        let path = Path::new(&normalized);
+        if path.is_absolute() {
+            return Err("path must be relative to the vault".to_string());
+        }
+
+        let mut safe_path = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Normal(segment) => safe_path.push(segment),
+                Component::CurDir => {}
+                _ => return Err("path cannot escape the vault".to_string()),
+            }
+        }
+
+        if safe_path.as_os_str().is_empty() {
+            return Err("path cannot be empty".to_string());
+        }
+
+        Ok(Self(safe_path))
+    }
+
+    fn markdown(raw_path: &str) -> Result<Self, String> {
+        let path = Self::parse(raw_path)?;
+        let extension = path
+            .0
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default();
+
+        if !extension.eq_ignore_ascii_case("md") {
+            return Err("Only Markdown notes with the .md extension are supported".to_string());
+        }
+
+        Ok(path)
+    }
+
+    fn as_cli_arg(&self) -> String {
+        path_to_cli_arg(&self.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ObsidianCommand {
+    args: Vec<OsString>,
+}
+
+impl ObsidianCommand {
+    fn new(command: impl Into<OsString>) -> Self {
+        Self {
+            args: vec![command.into()],
+        }
+    }
+
+    fn parameter(mut self, key: &str, value: impl AsRef<str>) -> Self {
+        self.args.push(format!("{key}={}", value.as_ref()).into());
+        self
+    }
+
+    fn flag(mut self, flag: impl Into<OsString>) -> Self {
+        self.args.push(flag.into());
+        self
+    }
+
+    fn into_args(self, vault_name: Option<&str>) -> Vec<OsString> {
+        match vault_name {
+            Some(vault_name) => std::iter::once(OsString::from(format!("vault={vault_name}")))
+                .chain(self.args)
+                .collect(),
+            None => self.args,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RealObsidianCli {
     program: OsString,
@@ -122,6 +205,7 @@ impl ObsidianCliRunner for RealObsidianCli {
 #[derive(Debug, Clone)]
 pub struct ObsidianMcp {
     vault: Arc<PathBuf>,
+    vault_name: Option<String>,
     cli: Arc<dyn ObsidianCliRunner>,
     tool_router: ToolRouter<Self>,
 }
@@ -208,14 +292,26 @@ impl ObsidianMcp {
     }
 
     pub fn new(vault: impl Into<PathBuf>) -> Result<Self, String> {
-        Self::with_runner(vault, RealObsidianCli::from_env())
+        Self::with_runner_and_vault_name(vault, vault_name_from_env(), RealObsidianCli::from_env())
     }
 
     pub fn default_vault_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("obsidian-vault")
     }
 
+    #[cfg(test)]
     fn with_runner<R>(vault: impl Into<PathBuf>, cli: R) -> Result<Self, String>
+    where
+        R: ObsidianCliRunner + 'static,
+    {
+        Self::with_runner_and_vault_name(vault, None, cli)
+    }
+
+    fn with_runner_and_vault_name<R>(
+        vault: impl Into<PathBuf>,
+        vault_name: Option<String>,
+        cli: R,
+    ) -> Result<Self, String>
     where
         R: ObsidianCliRunner + 'static,
     {
@@ -233,6 +329,7 @@ impl ObsidianMcp {
 
         Ok(Self {
             vault: Arc::new(vault),
+            vault_name: normalize_vault_name(vault_name),
             cli: Arc::new(cli),
             tool_router: Self::tool_router(),
         })
@@ -243,26 +340,22 @@ impl ObsidianMcp {
     }
 
     pub async fn vault_info_data(&self) -> Result<VaultInfoResponse, String> {
-        let obsidian_vault_path = self
-            .run_cli(vec!["vault".into(), "info=path".into()])
-            .await?
-            .trim()
-            .to_string();
-        let obsidian_vault_name = self
-            .run_cli(vec!["vault".into(), "info=name".into()])
-            .await?
-            .trim()
-            .to_string();
+        let vault_metadata =
+            parse_vault_metadata(&self.run_cli(ObsidianCommand::new("vault")).await?)?;
         let markdown_notes = parse_count(
             &self
-                .run_cli(vec!["files".into(), "ext=md".into(), "total".into()])
+                .run_cli(
+                    ObsidianCommand::new("files")
+                        .parameter("ext", "md")
+                        .flag("total"),
+                )
                 .await?,
         )?;
 
         Ok(VaultInfoResponse {
             configured_vault_path: self.vault_path().display().to_string(),
-            obsidian_vault_path,
-            obsidian_vault_name,
+            obsidian_vault_path: vault_metadata.path,
+            obsidian_vault_name: vault_metadata.name,
             markdown_notes,
         })
     }
@@ -272,13 +365,13 @@ impl ObsidianMcp {
         directory: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<String>, String> {
-        let directory = self.safe_directory(directory)?;
-        let mut args = vec!["files".into(), "ext=md".into()];
+        let directory = safe_directory(directory)?;
+        let mut command = ObsidianCommand::new("files").parameter("ext", "md");
         if let Some(directory) = &directory {
-            args.push(format!("folder={directory}").into());
+            command = command.parameter("folder", directory.as_cli_arg());
         }
 
-        let mut notes = parse_output_lines(&self.run_cli(args).await?);
+        let mut notes = parse_output_lines(&self.run_cli(command).await?);
         notes.retain(|note| has_markdown_extension(note));
         notes.sort();
         notes.truncate(clamp_limit(limit, 200, 2_000));
@@ -286,9 +379,8 @@ impl ObsidianMcp {
     }
 
     pub async fn read_note_content(&self, path: &str) -> Result<String, String> {
-        let path = self.safe_note_path(path)?;
-        self.run_cli(vec!["read".into(), format!("path={path}").into()])
-            .await
+        let path = VaultRelativePath::markdown(path)?;
+        self.read_note_content_at(&path).await
     }
 
     pub async fn write_note_content(
@@ -297,40 +389,38 @@ impl ObsidianMcp {
         content: &str,
         overwrite: bool,
     ) -> Result<String, String> {
-        let path = self.safe_note_path(path)?;
+        let path = VaultRelativePath::markdown(path)?;
         if !overwrite
             && self
-                .run_cli(vec!["file".into(), format!("path={path}").into()])
+                .run_cli(ObsidianCommand::new("file").parameter("path", path.as_cli_arg()))
                 .await
                 .is_ok()
         {
             return Err("Note already exists; pass overwrite=true to replace it".to_string());
         }
 
-        let mut args = vec![
-            "create".into(),
-            format!("path={path}").into(),
-            format!("content={}", encode_cli_text(content)).into(),
-        ];
+        let mut command = ObsidianCommand::new("create")
+            .parameter("path", path.as_cli_arg())
+            .parameter("content", encode_cli_text(content));
         if overwrite {
-            args.push("overwrite".into());
+            command = command.flag("overwrite");
         }
 
-        self.run_cli(args).await?;
-        Ok(format!("Wrote {path}"))
+        self.run_cli(command).await?;
+        Ok(format!("Wrote {}", path.as_cli_arg()))
     }
 
     pub async fn append_note_content(&self, path: &str, content: &str) -> Result<String, String> {
-        let path = self.safe_note_path(path)?;
-        self.run_cli(vec![
-            "append".into(),
-            format!("path={path}").into(),
-            format!("content={}", encode_cli_text(content)).into(),
-            "inline".into(),
-        ])
+        let path = VaultRelativePath::markdown(path)?;
+        self.run_cli(
+            ObsidianCommand::new("append")
+                .parameter("path", path.as_cli_arg())
+                .parameter("content", encode_cli_text(content))
+                .flag("inline"),
+        )
         .await?;
 
-        Ok(format!("Appended to {path}"))
+        Ok(format!("Appended to {}", path.as_cli_arg()))
     }
 
     pub async fn search_note_contents(
@@ -344,75 +434,32 @@ impl ObsidianMcp {
             return Err("query cannot be empty".to_string());
         }
 
-        let directory = self.safe_directory(directory)?;
+        let directory = safe_directory(directory)?;
         let limit = clamp_limit(limit, 50, 500);
-        let mut args = vec![
-            "search:context".into(),
-            format!("query={query}").into(),
-            format!("limit={limit}").into(),
-        ];
+        let mut command = ObsidianCommand::new("search:context")
+            .parameter("query", query)
+            .parameter("limit", limit.to_string());
         if let Some(directory) = &directory {
-            args.push(format!("path={directory}").into());
+            command = command.parameter("path", directory.as_cli_arg());
         }
 
-        let mut matches = parse_output_lines(&self.run_cli(args).await?);
+        let mut matches = parse_output_lines(&self.run_cli(command).await?);
         matches.truncate(limit);
         Ok(matches)
     }
 
-    async fn run_cli(&self, args: Vec<OsString>) -> Result<String, String> {
-        self.cli.run(self.vault_path(), args).await
+    async fn read_note_content_at(&self, path: &VaultRelativePath) -> Result<String, String> {
+        self.run_cli(ObsidianCommand::new("read").parameter("path", path.as_cli_arg()))
+            .await
     }
 
-    fn safe_note_path(&self, path: &str) -> Result<String, String> {
-        let path = self.safe_relative_path(path)?;
-        let extension = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default();
-
-        if !extension.eq_ignore_ascii_case("md") {
-            return Err("Only Markdown notes with the .md extension are supported".to_string());
-        }
-
-        Ok(path_to_cli_arg(&path))
-    }
-
-    fn safe_directory(&self, directory: Option<&str>) -> Result<Option<String>, String> {
-        match directory
-            .map(str::trim)
-            .filter(|directory| !directory.is_empty())
-        {
-            Some(directory) => Ok(Some(path_to_cli_arg(&self.safe_relative_path(directory)?))),
-            None => Ok(None),
-        }
-    }
-
-    fn safe_relative_path(&self, raw_path: &str) -> Result<PathBuf, String> {
-        let normalized = raw_path.trim().replace('\\', "/");
-        if normalized.is_empty() {
-            return Err("path cannot be empty".to_string());
-        }
-
-        let path = Path::new(&normalized);
-        if path.is_absolute() {
-            return Err("path must be relative to the vault".to_string());
-        }
-
-        let mut safe_path = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Normal(segment) => safe_path.push(segment),
-                Component::CurDir => {}
-                _ => return Err("path cannot escape the vault".to_string()),
-            }
-        }
-
-        if safe_path.as_os_str().is_empty() {
-            return Err("path cannot be empty".to_string());
-        }
-
-        Ok(safe_path)
+    async fn run_cli(&self, command: ObsidianCommand) -> Result<String, String> {
+        self.cli
+            .run(
+                self.vault_path(),
+                command.into_args(self.vault_name.as_deref()),
+            )
+            .await
     }
 }
 
@@ -465,10 +512,10 @@ impl ObsidianMcp {
         &self,
         Parameters(ReadNoteRequest { path }): Parameters<ReadNoteRequest>,
     ) -> Result<Json<ReadNoteResponse>, String> {
-        let normalized_path = self.safe_note_path(&path)?;
-        let content = self.read_note_content(&normalized_path).await?;
+        let normalized_path = VaultRelativePath::markdown(&path)?;
+        let content = self.read_note_content_at(&normalized_path).await?;
         Ok(Json(ReadNoteResponse {
-            path: normalized_path,
+            path: normalized_path.as_cli_arg(),
             content,
         }))
     }
@@ -491,13 +538,13 @@ impl ObsidianMcp {
             overwrite,
         }): Parameters<WriteNoteRequest>,
     ) -> Result<Json<WriteNoteResponse>, String> {
-        let normalized_path = self.safe_note_path(&path)?;
+        let normalized_path = VaultRelativePath::markdown(&path)?;
         let overwrite = overwrite.unwrap_or(false);
         let message = self
-            .write_note_content(&normalized_path, &content, overwrite)
+            .write_note_content(&normalized_path.as_cli_arg(), &content, overwrite)
             .await?;
         Ok(Json(WriteNoteResponse {
-            path: normalized_path,
+            path: normalized_path.as_cli_arg(),
             overwritten: overwrite,
             message,
         }))
@@ -517,10 +564,12 @@ impl ObsidianMcp {
         &self,
         Parameters(AppendNoteRequest { path, content }): Parameters<AppendNoteRequest>,
     ) -> Result<Json<AppendNoteResponse>, String> {
-        let normalized_path = self.safe_note_path(&path)?;
-        let message = self.append_note_content(&normalized_path, &content).await?;
+        let normalized_path = VaultRelativePath::markdown(&path)?;
+        let message = self
+            .append_note_content(&normalized_path.as_cli_arg(), &content)
+            .await?;
         Ok(Json(AppendNoteResponse {
-            path: normalized_path,
+            path: normalized_path.as_cli_arg(),
             message,
         }))
     }
@@ -564,6 +613,68 @@ impl ServerHandler for ObsidianMcp {
             ))
             .with_instructions("Use these tools to read, create, append, list, and search Markdown notes through the Obsidian CLI. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
     }
+}
+
+fn vault_name_from_env() -> Option<String> {
+    env::var("OBSIDIAN_VAULT_NAME").ok()
+}
+
+fn normalize_vault_name(vault_name: Option<String>) -> Option<String> {
+    vault_name
+        .map(|vault_name| vault_name.trim().to_string())
+        .filter(|vault_name| !vault_name.is_empty())
+}
+
+fn safe_directory(directory: Option<&str>) -> Result<Option<VaultRelativePath>, String> {
+    match directory
+        .map(str::trim)
+        .filter(|directory| !directory.is_empty())
+    {
+        Some(directory) => Ok(Some(VaultRelativePath::parse(directory)?)),
+        None => Ok(None),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VaultMetadata {
+    name: String,
+    path: String,
+}
+
+fn parse_vault_metadata(output: &str) -> Result<VaultMetadata, String> {
+    let mut name = None;
+    let mut path = None;
+
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let mut parts = line.splitn(2, char::is_whitespace);
+        let key = parts.next().unwrap_or_default();
+        let value = parts.next().unwrap_or_default().trim();
+
+        match key {
+            "name" if !value.is_empty() => name = Some(value.to_string()),
+            "path" if !value.is_empty() => path = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    let name = name.ok_or_else(|| {
+        format!(
+            "Cannot parse vault name from Obsidian CLI output: {}",
+            truncate_error(output)
+        )
+    })?;
+    let path = path.ok_or_else(|| {
+        format!(
+            "Cannot parse vault path from Obsidian CLI output: {}",
+            truncate_error(output)
+        )
+    })?;
+
+    Ok(VaultMetadata { name, path })
 }
 
 fn path_to_cli_arg(path: &Path) -> String {
@@ -667,6 +778,28 @@ mod tests {
                 .write_note_content("/tmp/secret.md", "", true)
                 .await
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn vault_relative_path_normalizes_and_validates_paths() {
+        assert_eq!(
+            VaultRelativePath::markdown(r"Projects\Rust.md")
+                .unwrap()
+                .as_cli_arg(),
+            "Projects/Rust.md"
+        );
+        assert_eq!(
+            VaultRelativePath::parse("./Projects/../Rust.md").unwrap_err(),
+            "path cannot escape the vault"
+        );
+        assert_eq!(
+            VaultRelativePath::markdown("Projects/Rust.txt").unwrap_err(),
+            "Only Markdown notes with the .md extension are supported"
+        );
+        assert_eq!(
+            VaultRelativePath::parse("/tmp/Rust.md").unwrap_err(),
+            "path must be relative to the vault"
         );
     }
 
@@ -811,8 +944,7 @@ mod tests {
     async fn vault_info_uses_cli_metadata_and_total_count() {
         let vault = TestVault::new();
         let cli = FakeObsidianCli::new([
-            Ok("/Users/example/Vault\n"),
-            Ok("Knowledge\n"),
+            Ok("name\tKnowledge\npath\t/Users/example/Vault\nfiles\t57\nfolders\t8\nsize\t1234\n"),
             Ok("Markdown files: 42\n"),
         ]);
         let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
@@ -835,11 +967,41 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             observed_args,
-            vec![
-                vec!["vault", "info=path"],
-                vec!["vault", "info=name"],
-                vec!["files", "ext=md", "total"],
-            ]
+            vec![vec!["vault"], vec!["files", "ext=md", "total"],]
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_info_rejects_empty_metadata() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([Ok("")]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let error = server.vault_info_data().await.unwrap_err();
+
+        assert!(error.contains("Cannot parse vault name"));
+    }
+
+    #[tokio::test]
+    async fn vault_name_prefixes_cli_calls() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([Ok("Projects/Rust.md\n")]);
+        let server = ObsidianMcp::with_runner_and_vault_name(
+            vault.path(),
+            Some(" main ".to_string()),
+            cli.clone(),
+        )
+        .unwrap();
+
+        let notes = server
+            .list_note_paths(Some("Projects"), Some(10))
+            .await
+            .unwrap();
+
+        assert_eq!(notes, vec!["Projects/Rust.md"]);
+        assert_eq!(
+            cli.calls()[0].args,
+            vec!["vault=main", "files", "ext=md", "folder=Projects"]
         );
     }
 
