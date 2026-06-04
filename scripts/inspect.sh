@@ -12,7 +12,7 @@ echo "Inspector: http://localhost:6274" >&2
 CLI_PROGRAM="${OBSIDIAN_CLI:-obsidian}"
 if ! command -v "$CLI_PROGRAM" >/dev/null 2>&1; then
   echo "Warning: '$CLI_PROGRAM' is not available. Set OBSIDIAN_CLI if needed." >&2
-elif CLI_CHECK_OUTPUT="$(cd "$OBSIDIAN_VAULT_PATH" && "$CLI_PROGRAM" vault info=name 2>&1 || true)" \
+elif CLI_CHECK_OUTPUT="$(cd "$OBSIDIAN_VAULT_PATH" && "$CLI_PROGRAM" vault 2>&1 || true)" \
   && [[ "$CLI_CHECK_OUTPUT" == *"Vault not found"* ]]; then
   echo "Warning: Obsidian CLI does not recognize this vault yet." >&2
   echo "Open '$OBSIDIAN_VAULT_PATH' in Obsidian and enable Settings > General > Command line interface." >&2
@@ -21,6 +21,9 @@ fi
 ENV_ARGS=(-e "OBSIDIAN_VAULT_PATH=$OBSIDIAN_VAULT_PATH")
 if [[ -n "${OBSIDIAN_CLI:-}" ]]; then
   ENV_ARGS+=(-e "OBSIDIAN_CLI=$OBSIDIAN_CLI")
+fi
+if [[ -n "${OBSIDIAN_VAULT_NAME:-}" ]]; then
+  ENV_ARGS+=(-e "OBSIDIAN_VAULT_NAME=$OBSIDIAN_VAULT_NAME")
 fi
 
 exec npx -y @modelcontextprotocol/inspector \

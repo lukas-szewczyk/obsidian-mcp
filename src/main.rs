@@ -10,7 +10,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), String> {
-    let service = ObsidianMcp::from_env()?;
+    let service = ObsidianMcp::from_env().map_err(|error| error.to_string())?;
     let running = service
         .serve(stdio())
         .await
