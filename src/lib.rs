@@ -11,13 +11,21 @@ use std::{
 };
 
 use rmcp::{
-    ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{
         router::tool::ToolRouter,
         wrapper::{Json, Parameters},
     },
-    model::{Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    model::{
+        AnnotateAble, GetPromptRequestParams, GetPromptResult, Implementation, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, Prompt,
+        PromptArgument, PromptMessage, PromptMessageRole, RawResource, RawResourceTemplate,
+        ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+        ResourceTemplate, ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router,
 };
 
 type CliFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
@@ -74,6 +82,41 @@ impl VaultRelativePath {
 
     fn as_cli_arg(&self) -> String {
         path_to_cli_arg(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ObsidianResourceUri {
+    VaultInfo,
+    NotesIndex,
+    Note(VaultRelativePath),
+}
+
+impl ObsidianResourceUri {
+    const VAULT_INFO: &'static str = "obsidian://vault/info";
+    const NOTES_INDEX: &'static str = "obsidian://notes/index";
+    const NOTE_PREFIX: &'static str = "obsidian://note/";
+
+    fn parse(uri: &str) -> Result<Self, String> {
+        match uri {
+            Self::VAULT_INFO => Ok(Self::VaultInfo),
+            Self::NOTES_INDEX => Ok(Self::NotesIndex),
+            _ => {
+                let Some(encoded_path) = uri.strip_prefix(Self::NOTE_PREFIX) else {
+                    return Err(format!("Unsupported Obsidian resource URI: {uri}"));
+                };
+                let decoded_path = percent_decode_uri_path(encoded_path)?;
+                Ok(Self::Note(VaultRelativePath::markdown(&decoded_path)?))
+            }
+        }
+    }
+
+    fn note(path: &VaultRelativePath) -> String {
+        format!(
+            "{}{}",
+            Self::NOTE_PREFIX,
+            percent_encode_uri_path(&path.as_cli_arg())
+        )
     }
 }
 
@@ -448,6 +491,139 @@ impl ObsidianMcp {
         Ok(matches)
     }
 
+    pub async fn list_resource_descriptors(&self) -> Result<Vec<Resource>, String> {
+        let mut resources = vec![vault_info_resource(), notes_index_resource()];
+        for note in self.list_note_paths(None, Some(200)).await? {
+            let path = VaultRelativePath::markdown(&note)?;
+            resources.push(note_resource(&path));
+        }
+        Ok(resources)
+    }
+
+    pub fn list_resource_template_descriptors(&self) -> Vec<ResourceTemplate> {
+        vec![
+            RawResourceTemplate::new("obsidian://note/{path}", "obsidian_note_by_path")
+                .with_title("Obsidian note")
+                .with_description("Read a Markdown note by vault-relative path.")
+                .with_mime_type("text/markdown")
+                .no_annotation(),
+        ]
+    }
+
+    pub async fn read_resource_uri(&self, uri: &str) -> Result<ReadResourceResult, String> {
+        let resource_uri = ObsidianResourceUri::parse(uri)?;
+        let contents = match resource_uri {
+            ObsidianResourceUri::VaultInfo => {
+                let info = self.vault_info_data().await?;
+                ResourceContents::text(format_vault_info_resource(&info), uri)
+                    .with_mime_type("text/plain")
+            }
+            ObsidianResourceUri::NotesIndex => {
+                let notes = self.list_note_paths(None, Some(2_000)).await?;
+                ResourceContents::text(notes.join("\n"), uri).with_mime_type("text/plain")
+            }
+            ObsidianResourceUri::Note(path) => {
+                let content = self.read_note_content_at(&path).await?;
+                ResourceContents::text(content, ObsidianResourceUri::note(&path))
+                    .with_mime_type("text/markdown")
+            }
+        };
+
+        Ok(ReadResourceResult::new(vec![contents]))
+    }
+
+    pub fn list_prompt_descriptors(&self) -> Vec<Prompt> {
+        vec![
+            Prompt::new(
+                "summarize_note",
+                Some("Summarize one Obsidian note and extract useful follow-up items."),
+                Some(vec![required_prompt_argument(
+                    "path",
+                    "Vault-relative Markdown path, for example Projects/Rust.md.",
+                )]),
+            )
+            .with_title("Summarize note"),
+            Prompt::new(
+                "search_and_synthesize",
+                Some("Search the vault and synthesize the most relevant note context."),
+                Some(vec![
+                    required_prompt_argument("query", "Text to search for in the vault."),
+                    optional_prompt_argument(
+                        "directory",
+                        "Optional vault-relative directory to narrow the search.",
+                    ),
+                ]),
+            )
+            .with_title("Search and synthesize"),
+            Prompt::new(
+                "draft_note_update",
+                Some("Draft a safe update to an existing or new Obsidian note."),
+                Some(vec![
+                    required_prompt_argument(
+                        "path",
+                        "Vault-relative Markdown path to read or update.",
+                    ),
+                    required_prompt_argument(
+                        "intent",
+                        "What the user wants to add, change, or capture.",
+                    ),
+                ]),
+            )
+            .with_title("Draft note update"),
+        ]
+    }
+
+    pub fn get_prompt_result(
+        &self,
+        request: GetPromptRequestParams,
+    ) -> Result<GetPromptResult, String> {
+        match request.name.as_str() {
+            "summarize_note" => {
+                let path = required_prompt_string(&request, "path")?;
+                let normalized_path = VaultRelativePath::markdown(&path)?;
+                let uri = ObsidianResourceUri::note(&normalized_path);
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Read the Obsidian note resource `{uri}` and summarize it. Include: concise summary, key facts, open questions, and action items. Do not modify the vault."
+                    ),
+                )])
+                .with_description("Summarize one Obsidian note."))
+            }
+            "search_and_synthesize" => {
+                let query = required_prompt_string(&request, "query")?;
+                let directory = optional_prompt_string(&request, "directory");
+                let directory_instruction = directory
+                    .as_deref()
+                    .filter(|directory| !directory.trim().is_empty())
+                    .map(|directory| format!(" Limit the search to `{directory}`."))
+                    .unwrap_or_default();
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Use the `search_notes` tool to search for `{query}` in the Obsidian vault.{directory_instruction} Read the most relevant `obsidian://note/{{path}}` resources before answering. Cite note paths and keep the synthesis grounded in note contents."
+                    ),
+                )])
+                .with_description("Search the vault and synthesize matching notes."))
+            }
+            "draft_note_update" => {
+                let path = required_prompt_string(&request, "path")?;
+                let intent = required_prompt_string(&request, "intent")?;
+                let normalized_path = VaultRelativePath::markdown(&path)?;
+                let uri = ObsidianResourceUri::note(&normalized_path);
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Prepare a Markdown update for `{}` based on this intent: {intent}\n\nFirst read `{uri}` if it exists. Draft the exact text to append or write. Do not call `write_note` or `append_note` until the user approves the final text.",
+                        normalized_path.as_cli_arg()
+                    ),
+                )])
+                .with_description("Draft a safe note update."))
+            }
+            _ => Err(format!("Unknown Obsidian prompt: {}", request.name)),
+        }
+    }
+
     async fn read_note_content_at(&self, path: &VaultRelativePath) -> Result<String, String> {
         self.run_cli(ObsidianCommand::new("read").parameter("path", path.as_cli_arg()))
             .await
@@ -605,13 +781,68 @@ impl ObsidianMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ObsidianMcp {
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        self.list_resource_descriptors()
+            .await
+            .map(ListResourcesResult::with_all_items)
+            .map_err(internal_mcp_error)
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult::with_all_items(
+            self.list_resource_template_descriptors(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        self.read_resource_uri(&request.uri)
+            .await
+            .map_err(resource_mcp_error)
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult::with_all_items(
+            self.list_prompt_descriptors(),
+        ))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        self.get_prompt_result(request).map_err(prompt_mcp_error)
+    }
+
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
             .with_server_info(Implementation::new(
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Use these tools to read, create, append, list, and search Markdown notes through the Obsidian CLI. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
+            .with_instructions("Use these tools, resources, and prompts to read, create, append, list, and search Markdown notes through the Obsidian CLI. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
     }
 }
 
@@ -675,6 +906,133 @@ fn parse_vault_metadata(output: &str) -> Result<VaultMetadata, String> {
     })?;
 
     Ok(VaultMetadata { name, path })
+}
+
+fn vault_info_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::VAULT_INFO, "obsidian_vault_info")
+        .with_title("Obsidian vault info")
+        .with_description(
+            "Configured vault path, Obsidian-reported vault identity, and note count.",
+        )
+        .with_mime_type("text/plain")
+        .no_annotation()
+}
+
+fn notes_index_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::NOTES_INDEX, "obsidian_notes_index")
+        .with_title("Obsidian notes index")
+        .with_description("Newline-delimited list of Markdown note paths in the vault.")
+        .with_mime_type("text/plain")
+        .no_annotation()
+}
+
+fn note_resource(path: &VaultRelativePath) -> Resource {
+    let uri = ObsidianResourceUri::note(path);
+    let path = path.as_cli_arg();
+    RawResource::new(uri, format!("obsidian_note:{path}"))
+        .with_title(path)
+        .with_description("Markdown note in the configured Obsidian vault.")
+        .with_mime_type("text/markdown")
+        .no_annotation()
+}
+
+fn format_vault_info_resource(info: &VaultInfoResponse) -> String {
+    format!(
+        "configured_vault_path\t{}\nobsidian_vault_path\t{}\nobsidian_vault_name\t{}\nmarkdown_notes\t{}",
+        info.configured_vault_path,
+        info.obsidian_vault_path,
+        info.obsidian_vault_name,
+        info.markdown_notes
+    )
+}
+
+fn required_prompt_argument(name: &str, description: &str) -> PromptArgument {
+    PromptArgument::new(name)
+        .with_description(description)
+        .with_required(true)
+}
+
+fn optional_prompt_argument(name: &str, description: &str) -> PromptArgument {
+    PromptArgument::new(name)
+        .with_description(description)
+        .with_required(false)
+}
+
+fn required_prompt_string(request: &GetPromptRequestParams, name: &str) -> Result<String, String> {
+    optional_prompt_string(request, name)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Prompt '{}' requires argument '{name}'", request.name))
+}
+
+fn optional_prompt_string(request: &GetPromptRequestParams, name: &str) -> Option<String> {
+    request
+        .arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get(name))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+fn internal_mcp_error(message: String) -> McpError {
+    McpError::internal_error(message, None)
+}
+
+fn resource_mcp_error(message: String) -> McpError {
+    if message.contains("Unsupported Obsidian resource URI")
+        || message.contains("Only Markdown notes")
+        || message.contains("path cannot")
+        || message.contains("path must")
+    {
+        McpError::resource_not_found(message, None)
+    } else {
+        McpError::internal_error(message, None)
+    }
+}
+
+fn prompt_mcp_error(message: String) -> McpError {
+    if message.contains("requires argument") || message.contains("Only Markdown notes") {
+        McpError::invalid_params(message, None)
+    } else {
+        McpError::resource_not_found(message, None)
+    }
+}
+
+fn percent_encode_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn percent_decode_uri_path(path: &str) -> Result<String, String> {
+    let mut decoded = Vec::new();
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("resource URI contains incomplete percent encoding".to_string());
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .map_err(|_| "resource URI contains invalid percent encoding".to_string())?;
+            let value = u8::from_str_radix(hex, 16)
+                .map_err(|_| "resource URI contains invalid percent encoding".to_string())?;
+            decoded.push(value);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded)
+        .map_err(|_| "resource URI percent-decoded path is not valid UTF-8".to_string())
 }
 
 fn path_to_cli_arg(path: &Path) -> String {
@@ -1005,6 +1363,156 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn resource_descriptors_include_static_resources_and_notes() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([Ok("Projects/Rust.md\nSpace Note.md\nimage.png\n")]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let resources = server.list_resource_descriptors().await.unwrap();
+        let uris = resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(uris.contains(&"obsidian://vault/info"));
+        assert!(uris.contains(&"obsidian://notes/index"));
+        assert!(uris.contains(&"obsidian://note/Projects/Rust.md"));
+        assert!(uris.contains(&"obsidian://note/Space%20Note.md"));
+        assert!(!uris.iter().any(|uri| uri.contains("image.png")));
+    }
+
+    #[test]
+    fn resource_templates_expose_note_uri_template() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::default();
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let templates = server.list_resource_template_descriptors();
+
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].uri_template, "obsidian://note/{path}");
+        assert_eq!(templates[0].mime_type.as_deref(), Some("text/markdown"));
+    }
+
+    #[tokio::test]
+    async fn read_note_resource_decodes_uri_and_reads_note() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([Ok("# Space Note\n")]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+        let result = server
+            .read_resource_uri("obsidian://note/Space%20Note.md")
+            .await
+            .unwrap();
+
+        assert_eq!(cli.calls()[0].args, vec!["read", "path=Space Note.md"]);
+        match &result.contents[0] {
+            ResourceContents::TextResourceContents {
+                text, mime_type, ..
+            } => {
+                assert_eq!(text, "# Space Note\n");
+                assert_eq!(mime_type.as_deref(), Some("text/markdown"));
+            }
+            _ => panic!("expected text resource contents"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_static_resources_returns_vault_info_and_index() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::new([
+            Ok("name\tKnowledge\npath\t/Users/example/Vault\nfiles\t57\n"),
+            Ok("42\n"),
+            Ok("Projects/Rust.md\nSpace Note.md\n"),
+        ]);
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let info = server
+            .read_resource_uri("obsidian://vault/info")
+            .await
+            .unwrap();
+        let index = server
+            .read_resource_uri("obsidian://notes/index")
+            .await
+            .unwrap();
+
+        assert_resource_text_contains(&info, "obsidian_vault_name\tKnowledge");
+        assert_resource_text_contains(&info, "markdown_notes\t42");
+        assert_resource_text_contains(&index, "Projects/Rust.md\nSpace Note.md");
+    }
+
+    #[test]
+    fn resource_uri_round_trips_percent_encoded_note_paths() {
+        let path = VaultRelativePath::markdown("Folder/Space Note.md").unwrap();
+        let uri = ObsidianResourceUri::note(&path);
+
+        assert_eq!(uri, "obsidian://note/Folder/Space%20Note.md");
+        assert_eq!(
+            ObsidianResourceUri::parse(&uri).unwrap(),
+            ObsidianResourceUri::Note(path)
+        );
+        assert!(ObsidianResourceUri::parse("obsidian://note/bad%").is_err());
+    }
+
+    #[test]
+    fn prompt_descriptors_and_prompt_messages_are_available() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::default();
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let prompts = server.list_prompt_descriptors();
+        let prompt_names = prompts
+            .iter()
+            .map(|prompt| prompt.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            prompt_names,
+            vec![
+                "summarize_note",
+                "search_and_synthesize",
+                "draft_note_update"
+            ]
+        );
+
+        let result = server
+            .get_prompt_result(prompt_request(
+                "summarize_note",
+                [("path", "Projects/Rust.md")],
+            ))
+            .unwrap();
+
+        assert_prompt_text_contains(&result, "obsidian://note/Projects/Rust.md");
+        assert_prompt_text_contains(&result, "Do not modify the vault");
+    }
+
+    #[test]
+    fn prompt_requests_validate_required_arguments() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::default();
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let error = server
+            .get_prompt_result(GetPromptRequestParams::new("summarize_note"))
+            .unwrap_err();
+
+        assert_eq!(error, "Prompt 'summarize_note' requires argument 'path'");
+    }
+
+    #[test]
+    fn server_info_advertises_all_three_capabilities() {
+        let vault = TestVault::new();
+        let cli = FakeObsidianCli::default();
+        let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+        let info = server.get_info();
+
+        assert!(info.capabilities.tools.is_some());
+        assert!(info.capabilities.resources.is_some());
+        assert!(info.capabilities.prompts.is_some());
+    }
+
     #[test]
     fn default_vault_path_points_to_project_vault() {
         let path = ObsidianMcp::default_vault_path();
@@ -1024,6 +1532,44 @@ mod tests {
         let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
 
         server.vault_info_data().await.unwrap();
+    }
+
+    fn prompt_request<const N: usize>(
+        name: &str,
+        arguments: [(&str, &str); N],
+    ) -> GetPromptRequestParams {
+        let mut values = rmcp::model::JsonObject::new();
+        for (key, value) in arguments {
+            values.insert(
+                key.to_string(),
+                rmcp::serde_json::Value::String(value.to_string()),
+            );
+        }
+        GetPromptRequestParams::new(name).with_arguments(values)
+    }
+
+    fn assert_resource_text_contains(result: &ReadResourceResult, expected: &str) {
+        match &result.contents[0] {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(
+                    text.contains(expected),
+                    "expected resource text to contain {expected:?}, got {text:?}"
+                );
+            }
+            _ => panic!("expected text resource contents"),
+        }
+    }
+
+    fn assert_prompt_text_contains(result: &GetPromptResult, expected: &str) {
+        match &result.messages[0].content {
+            rmcp::model::PromptMessageContent::Text { text } => {
+                assert!(
+                    text.contains(expected),
+                    "expected prompt text to contain {expected:?}, got {text:?}"
+                );
+            }
+            _ => panic!("expected text prompt message"),
+        }
     }
 
     #[derive(Debug, Clone, Default)]
