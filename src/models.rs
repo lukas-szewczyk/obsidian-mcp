@@ -90,6 +90,47 @@ pub struct ListProjectsRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListPropertiesRequest {
+    pub path: String,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct SetPropertyRequest {
+    pub path: String,
+    pub name: String,
+    pub value: String,
+    pub property_type: Option<PropertyType>,
+    pub preview: Option<bool>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListOverdueTasksRequest {
+    pub as_of: String,
+    pub target: Option<TaskReadTarget>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListTasksByProjectRequest {
+    pub path: String,
+    pub status: Option<TaskStatus>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct GetProjectStatusRequest {
+    pub path: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct PreviewNoteChangeRequest {
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct VaultInfoResponse {
     pub configured_vault_path: String,
@@ -266,6 +307,112 @@ pub struct ListProjectsResponse {
     pub count: usize,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rmcp::serde::Deserialize,
+    rmcp::serde::Serialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PropertyType {
+    Text,
+    List,
+    Number,
+    Checkbox,
+    Date,
+    Datetime,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct NoteProperty {
+    pub name: String,
+    pub value: rmcp::serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListPropertiesResponse {
+    pub path: String,
+    pub properties: Vec<NoteProperty>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct SetPropertyResponse {
+    pub path: String,
+    pub name: String,
+    pub value: String,
+    pub property_type: Option<PropertyType>,
+    pub previous_value: Option<rmcp::serde_json::Value>,
+    pub applied: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct OverdueTaskItem {
+    pub due_date: String,
+    pub status: String,
+    pub text: String,
+    pub path: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListOverdueTasksResponse {
+    pub as_of: String,
+    pub target: TaskReadTarget,
+    pub tasks: Vec<OverdueTaskItem>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListTasksByProjectResponse {
+    pub path: String,
+    pub status: Option<TaskStatus>,
+    pub tasks: Vec<TaskItem>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectStatusResponse {
+    pub path: String,
+    pub content: String,
+    pub properties: Vec<NoteProperty>,
+    pub open_tasks: Vec<TaskItem>,
+    pub completed_tasks: Vec<TaskItem>,
+    pub backlinks: Vec<String>,
+    pub open_task_count: usize,
+    pub completed_task_count: usize,
+    pub backlink_count: usize,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    rmcp::serde::Deserialize,
+    rmcp::serde::Serialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteChangeMode {
+    Create,
+    Replace,
+    Append,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct PreviewNoteChangeResponse {
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub exists: bool,
+    pub current_content: Option<String>,
+    pub proposed_content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +448,12 @@ mod tests {
             )
             .is_err()
         );
+
+        let property_type: PropertyType =
+            rmcp::serde_json::from_value(rmcp::serde_json::json!("date")).unwrap();
+        let change_mode: NoteChangeMode =
+            rmcp::serde_json::from_value(rmcp::serde_json::json!("append")).unwrap();
+        assert_eq!(property_type, PropertyType::Date);
+        assert_eq!(change_mode, NoteChangeMode::Append);
     }
 }

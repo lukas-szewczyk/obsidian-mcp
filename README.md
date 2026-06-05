@@ -4,6 +4,8 @@
 
 The server runs over stdio, keeps Obsidian as the source of truth, and exposes focused tools, resources, and prompts for notes, daily notes, tasks, tags, backlinks, and project workflows.
 
+The current source tree targets `v0.3.0`. The latest published GitHub Release is `v0.2.0`.
+
 ## Requirements
 
 - macOS on Apple Silicon for the prebuilt `v0.2.0` binary
@@ -18,6 +20,8 @@ The server runs over stdio, keeps Obsidian as the source of truth, and exposes f
 - Note operations accept Markdown files only.
 - `create_note` refuses to replace an existing note.
 - `replace_note` refuses to create a missing note.
+- `preview_note_change` shows exact proposed note contents without writing.
+- `set_property` supports a read-only preview mode.
 - Task and append operations are explicit and non-idempotent where appropriate.
 - The server does not expose delete, move, rename, or generic CLI execution.
 - MCP protocol output is written to stdout; diagnostics are written to stderr.
@@ -97,6 +101,12 @@ Restart Codex after changing MCP configuration.
 | `create_task` | Create a task in a note or today's daily note |
 | `set_task_status` | Set a task to todo, done, or a custom status |
 | `list_projects` | List Markdown notes under the projects directory |
+| `list_properties` | List structured frontmatter properties for a note |
+| `set_property` | Preview or set a typed frontmatter property |
+| `list_overdue_tasks` | List incomplete tasks due before an explicit date |
+| `list_tasks_by_project` | List tasks belonging to one project note |
+| `get_project_status` | Read a project with properties, tasks, and backlinks |
+| `preview_note_change` | Preview create, replace, or append results without writing |
 
 Typed task values use tagged JSON:
 
@@ -105,6 +115,16 @@ Typed task values use tagged JSON:
 ```
 
 Valid read targets are `vault`, `daily`, and `note`. Valid write targets are `daily` and `note`. Valid statuses are `todo`, `done`, and `custom`; a custom status must contain exactly one character.
+
+Overdue task detection supports the common `📅 YYYY-MM-DD` and `due:: YYYY-MM-DD` task markers. `list_overdue_tasks` requires an explicit `as_of` date so results remain deterministic.
+
+Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `date`, and `datetime`.
+
+```json
+{"path":"Projects/Rust.md","name":"status","value":"paused","property_type":"text","preview":true}
+```
+
+`preview` defaults to `true`. Use the same request with `preview=false` only after reviewing the previous value returned by the preview.
 
 ### Resources
 
@@ -119,6 +139,9 @@ Valid read targets are `vault`, `daily`, and `note`. Valid write targets are `da
 | `obsidian://note/{path}` | One Markdown note |
 | `obsidian://backlinks/{path}` | Backlinks for one note |
 | `obsidian://daily/{date}` | One daily note by `YYYY-MM-DD` |
+| `obsidian://tasks/overdue/{date}` | Incomplete tasks due before a date |
+| `obsidian://project/{path}` | Project note with properties, tasks, and backlinks |
+| `obsidian://properties/{path}` | Structured frontmatter properties for a note |
 
 ### Prompts
 
@@ -128,6 +151,7 @@ Valid read targets are `vault`, `daily`, and `note`. Valid write targets are `da
 | `search_and_synthesize` | Search the vault and synthesize relevant context |
 | `draft_note_update` | Draft an approved create, replace, or append operation |
 | `daily_review` | Review today's daily note |
+| `plan_day` | Plan one explicit date from daily notes, overdue tasks, and projects |
 | `tag_overview` | Summarize how a tag is used |
 | `backlink_review` | Review incoming links to a note |
 | `weekly_review` | Review a range of daily notes and open tasks |
@@ -149,13 +173,15 @@ Run the MCP Inspector against the local fixture:
 ./scripts/inspect.sh
 ```
 
+The stable read-only Work System evaluation set is in `evaluations/work-system-v0.3.0.xml`.
+
 Run the ignored live smoke test against an open Obsidian vault:
 
 ```bash
 OBSIDIAN_VAULT_PATH="/absolute/path/to/vault" \
 OBSIDIAN_VAULT_NAME=main \
 OBSIDIAN_CLI="/Applications/Obsidian.app/Contents/MacOS/obsidian" \
-cargo test --locked real_cli_smoke_vault_info -- --ignored --nocapture
+cargo test --locked real_cli_smoke_ -- --ignored --nocapture
 ```
 
 ## License

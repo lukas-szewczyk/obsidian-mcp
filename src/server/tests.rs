@@ -46,7 +46,7 @@ fn task_status_and_content_validate_workflow_inputs() {
 }
 
 #[test]
-fn tool_contract_exposes_only_v020_names() {
+fn tool_contract_exposes_v030_work_system_names() {
     let vault = TestVault::new();
     let server = ObsidianMcp::with_runner(vault.path(), FakeObsidianCli::default()).unwrap();
     let names = server
@@ -62,6 +62,12 @@ fn tool_contract_exposes_only_v020_names() {
         "create_task",
         "set_task_status",
         "read_daily_notes",
+        "list_properties",
+        "set_property",
+        "list_overdue_tasks",
+        "list_tasks_by_project",
+        "get_project_status",
+        "preview_note_change",
     ] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -379,6 +385,200 @@ async fn uses_cli_for_work_system_tasks_daily_range_and_projects() {
 }
 
 #[tokio::test]
+async fn uses_cli_for_properties_and_property_preview() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok(r#"{"status":"active","priority":2}"#),
+        Ok("Projects/Rust.md"),
+        Ok(r#"{"status":"active","priority":2}"#),
+        Ok("Projects/Rust.md"),
+        Ok(r#"{"status":"active"}"#),
+        Ok("updated"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let properties = server
+        .list_properties_data("Projects/Rust.md")
+        .await
+        .unwrap();
+    let preview = server
+        .set_property_data(
+            "Projects/Rust.md",
+            "status",
+            "paused",
+            Some(&PropertyType::Text),
+            true,
+        )
+        .await
+        .unwrap();
+    let applied = server
+        .set_property_data(
+            "Projects/Rust.md",
+            "status",
+            "done",
+            Some(&PropertyType::Text),
+            false,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(properties.len(), 2);
+    assert_eq!(
+        preview.previous_value,
+        Some(rmcp::serde_json::json!("active"))
+    );
+    assert!(!preview.applied);
+    assert!(applied.applied);
+    assert_eq!(
+        cli.calls()
+            .iter()
+            .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["properties", "path=Projects/Rust.md", "format=json"],
+            vec!["file", "path=Projects/Rust.md"],
+            vec!["properties", "path=Projects/Rust.md", "format=json"],
+            vec!["file", "path=Projects/Rust.md"],
+            vec!["properties", "path=Projects/Rust.md", "format=json"],
+            vec![
+                "property:set",
+                "path=Projects/Rust.md",
+                "name=status",
+                "value=done",
+                "type=text",
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn set_property_tool_defaults_to_preview() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([Ok("Projects/Rust.md"), Ok(r#"{"status":"active"}"#)]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    let (server_transport, client_transport) = tokio::io::duplex(16_384);
+    let server_handle = tokio::spawn(async move {
+        server
+            .serve(server_transport)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+    let client = TestClient.serve(client_transport).await.unwrap();
+    let arguments = rmcp::serde_json::json!({
+        "path": "Projects/Rust.md",
+        "name": "status",
+        "value": "paused",
+        "property_type": "text"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    let result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("set_property").with_arguments(arguments))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error.unwrap_or(false));
+    assert_eq!(
+        cli.calls()
+            .iter()
+            .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["file", "path=Projects/Rust.md"],
+            vec!["properties", "path=Projects/Rust.md", "format=json"],
+        ]
+    );
+
+    client.cancel().await.unwrap();
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn lists_overdue_and_project_tasks() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok(
+            " \t- [ ] Older 📅 2026-06-01\tTodo.md\t1\n \t- [ ] Today 📅 2026-06-05\tTodo.md\t2\n \t- [ ] Inline due:: 2026-06-03\tTodo.md\t3\n \t- [ ] No date\tTodo.md\t4\n",
+        ),
+        Ok(" \t- [ ] Project task\tProjects/Rust.md\t8\n"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let overdue = server
+        .list_overdue_tasks_data("2026-06-05", &TaskReadTarget::Vault, Some(10))
+        .await
+        .unwrap();
+    let project_tasks = server
+        .list_tasks_by_project_data("Projects/Rust.md", Some(&TaskStatus::Todo), Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        overdue
+            .iter()
+            .map(|task| task.due_date.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-06-01", "2026-06-03"]
+    );
+    assert_eq!(project_tasks[0].path, "Projects/Rust.md");
+    assert_eq!(
+        cli.calls()
+            .iter()
+            .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["tasks", "format=tsv", "todo"],
+            vec!["tasks", "format=tsv", "path=Projects/Rust.md", "todo"],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn composes_project_status_and_previews_note_changes() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok("# Rust MCP\n"),
+        Ok(r#"{"status":"active"}"#),
+        Ok(" \t- [ ] Ship v0.3\tProjects/Rust.md\t8\n"),
+        Ok("x\t- [x] Ship v0.2\tProjects/Rust.md\t7\n"),
+        Ok("Ideas/MCP.md\t2\n"),
+        Ok("Projects/Rust.md"),
+        Ok("# Rust MCP\n"),
+        Ok("Projects/Rust.md"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let status = server
+        .get_project_status_data("Projects/Rust.md", Some(10))
+        .await
+        .unwrap();
+    let append = server
+        .preview_note_change_data("Projects/Rust.md", &NoteChangeMode::Append, "\n## Next\n")
+        .await
+        .unwrap();
+    let create_error = server
+        .preview_note_change_data("Projects/Rust.md", &NoteChangeMode::Create, "# New")
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.open_task_count, 1);
+    assert_eq!(status.completed_task_count, 1);
+    assert_eq!(status.backlink_count, 1);
+    assert_eq!(status.properties[0].name, "status");
+    assert_eq!(append.proposed_content, "# Rust MCP\n\n## Next\n");
+    assert_eq!(
+        create_error.to_string(),
+        "Note already exists; preview replace or append instead"
+    );
+}
+
+#[tokio::test]
 async fn vault_info_uses_cli_metadata_and_total_count() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
@@ -475,13 +675,17 @@ fn resource_templates_expose_note_uri_template() {
 
     let templates = server.list_resource_template_descriptors();
 
-    assert_eq!(templates.len(), 3);
+    assert_eq!(templates.len(), 6);
     assert_eq!(templates[0].uri_template, "obsidian://note/{path}");
     assert_eq!(templates[0].mime_type.as_deref(), Some("text/markdown"));
     assert_eq!(templates[1].uri_template, "obsidian://backlinks/{path}");
     assert_eq!(templates[1].mime_type.as_deref(), Some("text/plain"));
     assert_eq!(templates[2].uri_template, "obsidian://daily/{date}");
     assert_eq!(templates[2].mime_type.as_deref(), Some("text/markdown"));
+    assert_eq!(templates[3].uri_template, "obsidian://tasks/overdue/{date}");
+    assert_eq!(templates[3].mime_type.as_deref(), Some("application/json"));
+    assert_eq!(templates[4].uri_template, "obsidian://project/{path}");
+    assert_eq!(templates[5].uri_template, "obsidian://properties/{path}");
 }
 
 #[tokio::test]
@@ -609,6 +813,38 @@ async fn read_work_system_resources() {
     );
 }
 
+#[tokio::test]
+async fn read_v030_work_system_resources() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
+        Ok(r#"{"status":"active"}"#),
+        Ok("# Rust MCP\n"),
+        Ok(r#"{"status":"active"}"#),
+        Ok(" \t- [ ] Ship v0.3\tProjects/Rust.md\t8\n"),
+        Ok("x\t- [x] Ship v0.2\tProjects/Rust.md\t7\n"),
+        Ok("Ideas/MCP.md\t2\n"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+    let overdue = server
+        .read_resource_uri("obsidian://tasks/overdue/2026-06-05")
+        .await
+        .unwrap();
+    let properties = server
+        .read_resource_uri("obsidian://properties/Projects/Rust.md")
+        .await
+        .unwrap();
+    let project = server
+        .read_resource_uri("obsidian://project/Projects/Rust.md")
+        .await
+        .unwrap();
+
+    assert_resource_text_contains(&overdue, r#""due_date": "2026-06-01""#);
+    assert_resource_text_contains(&properties, r#""name": "status""#);
+    assert_resource_text_contains(&project, r#""open_task_count": 1"#);
+}
+
 #[test]
 fn resource_uri_round_trips_percent_encoded_note_paths() {
     let path = VaultRelativePath::markdown("Folder/Space Note.md").unwrap();
@@ -618,6 +854,20 @@ fn resource_uri_round_trips_percent_encoded_note_paths() {
     assert_eq!(
         ObsidianResourceUri::parse(&uri).unwrap(),
         ObsidianResourceUri::Note(path)
+    );
+    assert_eq!(
+        ObsidianResourceUri::parse("obsidian://project/Folder/Space%20Note.md").unwrap(),
+        ObsidianResourceUri::Project(VaultRelativePath::markdown("Folder/Space Note.md").unwrap())
+    );
+    assert_eq!(
+        ObsidianResourceUri::parse("obsidian://properties/Folder/Space%20Note.md").unwrap(),
+        ObsidianResourceUri::Properties(
+            VaultRelativePath::markdown("Folder/Space Note.md").unwrap()
+        )
+    );
+    assert_eq!(
+        ObsidianResourceUri::parse("obsidian://tasks/overdue/2026-06-05").unwrap(),
+        ObsidianResourceUri::TasksOverdue(DailyDate::parse("2026-06-05").unwrap())
     );
     assert!(ObsidianResourceUri::parse("obsidian://note/bad%").is_err());
 }
@@ -641,6 +891,7 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
             "search_and_synthesize",
             "draft_note_update",
             "daily_review",
+            "plan_day",
             "tag_overview",
             "backlink_review",
             "weekly_review",
@@ -664,6 +915,12 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
         .unwrap();
     assert_prompt_text_contains(&daily, "obsidian://daily/today");
 
+    let plan_day = server
+        .get_prompt_result(prompt_request("plan_day", [("date", "2026-06-05")]))
+        .unwrap();
+    assert_prompt_text_contains(&plan_day, "obsidian://daily/2026-06-05");
+    assert_prompt_text_contains(&plan_day, "obsidian://tasks/overdue/2026-06-05");
+
     let tag = server
         .get_prompt_result(prompt_request("tag_overview", [("tag", "rust")]))
         .unwrap();
@@ -684,6 +941,7 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
         ))
         .unwrap();
     assert_prompt_text_contains(&weekly, "read_daily_notes");
+    assert_prompt_text_contains(&weekly, "obsidian://tasks/overdue/2026-06-07");
 
     let project = server
         .get_prompt_result(prompt_request(
@@ -692,7 +950,7 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
         ))
         .unwrap();
     assert_prompt_text_contains(&project, "obsidian://note/Projects/Rust.md");
-    assert_prompt_text_contains(&project, r#"{"type":"note","path":"Projects/Rust.md"}"#);
+    assert_prompt_text_contains(&project, "get_project_status");
 
     let inbox = server
         .get_prompt_result(prompt_request("inbox_triage", [("directory", "Inbox")]))
@@ -747,7 +1005,9 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     let cli = FakeObsidianCli::new([
         Ok("Projects/Rust.md\n"),
         Ok(" \t- [ ] Review release\tTodo.md\t4\n"),
+        Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
         Ok("Projects/Rust.md\n"),
+        Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
     let (server_transport, client_transport) = tokio::io::duplex(16_384);
@@ -779,9 +1039,29 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         .call_tool(CallToolRequestParams::new("list_tasks").with_arguments(task_args))
         .await
         .unwrap();
+    let overdue_args = rmcp::serde_json::json!({
+        "as_of": "2026-06-05",
+        "target": {"type": "vault"},
+        "limit": 10
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let overdue_result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("list_overdue_tasks").with_arguments(overdue_args))
+        .await
+        .unwrap();
     let note_index = client
         .peer()
         .read_resource(ReadResourceRequestParams::new("obsidian://notes/index"))
+        .await
+        .unwrap();
+    let overdue_resource = client
+        .peer()
+        .read_resource(ReadResourceRequestParams::new(
+            "obsidian://tasks/overdue/2026-06-05",
+        ))
         .await
         .unwrap();
     let weekly = client
@@ -792,8 +1072,14 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         ))
         .await
         .unwrap();
+    let plan_day = client
+        .peer()
+        .get_prompt(prompt_request("plan_day", [("date", "2026-06-05")]))
+        .await
+        .unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "list_tasks"));
+    assert!(tools.iter().any(|tool| tool.name == "get_project_status"));
     assert!(
         resources
             .iter()
@@ -804,10 +1090,19 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
             .iter()
             .any(|template| template.uri_template == "obsidian://daily/{date}")
     );
+    assert!(
+        templates
+            .iter()
+            .any(|template| template.uri_template == "obsidian://project/{path}")
+    );
     assert!(prompts.iter().any(|prompt| prompt.name == "weekly_review"));
+    assert!(prompts.iter().any(|prompt| prompt.name == "plan_day"));
     assert!(!task_result.is_error.unwrap_or(false));
+    assert!(!overdue_result.is_error.unwrap_or(false));
     assert_resource_text_contains(&note_index, "Projects/Rust.md");
+    assert_resource_text_contains(&overdue_resource, "2026-06-01");
     assert_prompt_text_contains(&weekly, "read_daily_notes");
+    assert_prompt_text_contains(&plan_day, "get_project_status");
 
     client.cancel().await.unwrap();
     server_handle.await.unwrap();
@@ -829,6 +1124,20 @@ async fn real_cli_smoke_vault_info() {
     let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
 
     server.vault_info_data().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
+async fn real_cli_smoke_work_system_reads() {
+    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
+    let note_path = env::var("OBSIDIAN_SMOKE_NOTE_PATH").unwrap_or_else(|_| "Todo.md".to_string());
+    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+
+    server.list_properties_data(&note_path).await.unwrap();
+    server
+        .list_overdue_tasks_data("2026-06-05", &TaskReadTarget::Vault, Some(10))
+        .await
+        .unwrap();
 }
 
 fn prompt_request<const N: usize>(

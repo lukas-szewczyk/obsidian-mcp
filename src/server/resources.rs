@@ -13,9 +13,12 @@ pub(super) enum ObsidianResourceUri {
     DailyToday,
     Daily(DailyDate),
     TasksOpen,
+    TasksOverdue(DailyDate),
     ProjectsIndex,
     Note(VaultRelativePath),
     Backlinks(VaultRelativePath),
+    Project(VaultRelativePath),
+    Properties(VaultRelativePath),
 }
 
 impl ObsidianResourceUri {
@@ -25,9 +28,12 @@ impl ObsidianResourceUri {
     const DAILY_TODAY: &'static str = "obsidian://daily/today";
     const DAILY_PREFIX: &'static str = "obsidian://daily/";
     const TASKS_OPEN: &'static str = "obsidian://tasks/open";
+    const TASKS_OVERDUE_PREFIX: &'static str = "obsidian://tasks/overdue/";
     const PROJECTS_INDEX: &'static str = "obsidian://projects/index";
     const NOTE_PREFIX: &'static str = "obsidian://note/";
     const BACKLINKS_PREFIX: &'static str = "obsidian://backlinks/";
+    const PROJECT_PREFIX: &'static str = "obsidian://project/";
+    const PROPERTIES_PREFIX: &'static str = "obsidian://properties/";
 
     pub(super) fn parse(uri: &str) -> AppResult<Self> {
         match uri {
@@ -44,6 +50,16 @@ impl ObsidianResourceUri {
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::BACKLINKS_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Backlinks(VaultRelativePath::markdown(&decoded_path)?))
+                } else if let Some(encoded_path) = uri.strip_prefix(Self::PROJECT_PREFIX) {
+                    let decoded_path = percent_decode_uri_path(encoded_path)?;
+                    Ok(Self::Project(VaultRelativePath::markdown(&decoded_path)?))
+                } else if let Some(encoded_path) = uri.strip_prefix(Self::PROPERTIES_PREFIX) {
+                    let decoded_path = percent_decode_uri_path(encoded_path)?;
+                    Ok(Self::Properties(VaultRelativePath::markdown(
+                        &decoded_path,
+                    )?))
+                } else if let Some(date) = uri.strip_prefix(Self::TASKS_OVERDUE_PREFIX) {
+                    Ok(Self::TasksOverdue(DailyDate::parse(date)?))
                 } else if let Some(date) = uri.strip_prefix(Self::DAILY_PREFIX) {
                     Ok(Self::Daily(DailyDate::parse(date)?))
                 } else {
@@ -73,6 +89,26 @@ impl ObsidianResourceUri {
             Self::BACKLINKS_PREFIX,
             percent_encode_uri_path(&path.as_cli_arg())
         )
+    }
+
+    pub(super) fn project(path: &VaultRelativePath) -> String {
+        format!(
+            "{}{}",
+            Self::PROJECT_PREFIX,
+            percent_encode_uri_path(&path.as_cli_arg())
+        )
+    }
+
+    pub(super) fn properties(path: &VaultRelativePath) -> String {
+        format!(
+            "{}{}",
+            Self::PROPERTIES_PREFIX,
+            percent_encode_uri_path(&path.as_cli_arg())
+        )
+    }
+
+    pub(super) fn tasks_overdue(date: &DailyDate) -> String {
+        format!("{}{date}", Self::TASKS_OVERDUE_PREFIX)
     }
 }
 
@@ -111,6 +147,30 @@ impl ObsidianMcp {
                 .with_description("Read a daily note by YYYY-MM-DD date.")
                 .with_mime_type("text/markdown")
                 .no_annotation(),
+            RawResourceTemplate::new(
+                "obsidian://tasks/overdue/{date}",
+                "obsidian_overdue_tasks_by_date",
+            )
+            .with_title("Overdue Obsidian tasks")
+            .with_description("Read incomplete tasks due before a YYYY-MM-DD date.")
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "obsidian://project/{path}",
+                "obsidian_project_status_by_path",
+            )
+            .with_title("Obsidian project status")
+            .with_description("Read a project note with properties, tasks, and backlinks.")
+            .with_mime_type("application/json")
+            .no_annotation(),
+            RawResourceTemplate::new(
+                "obsidian://properties/{path}",
+                "obsidian_note_properties_by_path",
+            )
+            .with_title("Obsidian note properties")
+            .with_description("Read structured frontmatter properties for one Markdown note.")
+            .with_mime_type("application/json")
+            .no_annotation(),
         ]
     }
 
@@ -146,6 +206,19 @@ impl ObsidianMcp {
                 ResourceContents::text(format_tasks_resource(&tasks), uri)
                     .with_mime_type("text/plain")
             }
+            ObsidianResourceUri::TasksOverdue(date) => {
+                let tasks = self
+                    .list_overdue_tasks_data(&date.to_string(), &TaskReadTarget::Vault, Some(1_000))
+                    .await?;
+                let response = ListOverdueTasksResponse {
+                    as_of: date.to_string(),
+                    target: TaskReadTarget::Vault,
+                    count: tasks.len(),
+                    tasks,
+                };
+                ResourceContents::text(serialize_resource_json(&response)?, uri)
+                    .with_mime_type("application/json")
+            }
             ObsidianResourceUri::ProjectsIndex => {
                 let (_, projects) = self.list_project_note_paths(None, Some(1_000)).await?;
                 ResourceContents::text(projects.join("\n"), uri).with_mime_type("text/plain")
@@ -162,10 +235,39 @@ impl ObsidianMcp {
                 ResourceContents::text(backlinks.join("\n"), ObsidianResourceUri::backlinks(&path))
                     .with_mime_type("text/plain")
             }
+            ObsidianResourceUri::Project(path) => {
+                let status = self
+                    .get_project_status_data(&path.as_cli_arg(), Some(500))
+                    .await?;
+                ResourceContents::text(
+                    serialize_resource_json(&status)?,
+                    ObsidianResourceUri::project(&path),
+                )
+                .with_mime_type("application/json")
+            }
+            ObsidianResourceUri::Properties(path) => {
+                let properties = self.list_properties_data(&path.as_cli_arg()).await?;
+                let response = ListPropertiesResponse {
+                    path: path.as_cli_arg(),
+                    count: properties.len(),
+                    properties,
+                };
+                ResourceContents::text(
+                    serialize_resource_json(&response)?,
+                    ObsidianResourceUri::properties(&path),
+                )
+                .with_mime_type("application/json")
+            }
         };
 
         Ok(ReadResourceResult::new(vec![contents]))
     }
+}
+
+fn serialize_resource_json(value: &impl rmcp::serde::Serialize) -> AppResult<String> {
+    rmcp::serde_json::to_string_pretty(value).map_err(|error| {
+        ObsidianMcpError::Parse(format!("Cannot serialize Obsidian resource: {error}"))
+    })
 }
 
 fn format_tasks_resource(tasks: &[TaskItem]) -> String {

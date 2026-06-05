@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Work-system tools for structured note properties, overdue tasks, project tasks, and composed project status.
+- Read-only previews for note changes and property writes.
+- `plan_day` prompt plus project, properties, and overdue-task resource templates.
+- Inspector fixture project with frontmatter and dated tasks.
+- Stable read-only evaluation questions for the Work System fixture.
+
+### Changed
+
+- Package version now targets `0.3.0`.
+- `draft_note_update`, `weekly_review`, and `project_review` prompts use the new work-system capabilities.
+- GitHub workflows use `actions/checkout@v6`.
+
 ## 0.2.0 - 2026-06-05
 
 First public release.

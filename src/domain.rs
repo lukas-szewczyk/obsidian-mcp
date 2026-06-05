@@ -181,6 +181,31 @@ impl TaskLine {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PropertyName(String);
+
+impl PropertyName {
+    pub(crate) fn parse(raw_name: &str) -> AppResult<Self> {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(ObsidianMcpError::InvalidInput(
+                "property name cannot be empty".to_string(),
+            ));
+        }
+        if name.contains('\n') || name.contains('\r') {
+            return Err(ObsidianMcpError::InvalidInput(
+                "property name must be a single line".to_string(),
+            ));
+        }
+
+        Ok(Self(name.to_string()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 fn days_in_month(year: u16, month: u8) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -251,6 +276,14 @@ mod tests {
         assert_eq!(
             TaskLine::parse(0).unwrap_err().to_string(),
             "task line must be greater than zero"
+        );
+        assert_eq!(
+            PropertyName::parse("  status  ").unwrap().as_str(),
+            "status"
+        );
+        assert_eq!(
+            PropertyName::parse(" ").unwrap_err().to_string(),
+            "property name cannot be empty"
         );
     }
 }
