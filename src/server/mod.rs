@@ -1,3 +1,4 @@
+mod bases;
 mod knowledge_graph;
 mod prompts;
 mod resources;
@@ -28,7 +29,10 @@ use rmcp::{
 use crate::{
     AppResult, ObsidianMcpError,
     cli::{ObsidianCliRunner, ObsidianCommand, RealObsidianCli, encode_cli_text, truncate_error},
-    domain::{DailyDate, PropertyName, TaskLine, VaultRelativePath, has_markdown_extension},
+    domain::{
+        DailyDate, PropertyName, TaskLine, VaultRelativePath, has_base_extension,
+        has_markdown_extension,
+    },
     error_message,
     models::*,
 };
@@ -503,7 +507,7 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Use create_note only for missing notes and replace_note only for existing notes. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
+            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
     }
 }
 

@@ -47,6 +47,22 @@ impl VaultRelativePath {
     }
 
     pub(crate) fn markdown(raw_path: &str) -> AppResult<Self> {
+        Self::with_extension(
+            raw_path,
+            "md",
+            "Only Markdown notes with the .md extension are supported",
+        )
+    }
+
+    pub(crate) fn base(raw_path: &str) -> AppResult<Self> {
+        Self::with_extension(
+            raw_path,
+            "base",
+            "Only Obsidian Bases with the .base extension are supported",
+        )
+    }
+
+    fn with_extension(raw_path: &str, expected: &str, error_message: &str) -> AppResult<Self> {
         let path = Self::parse(raw_path)?;
         let extension = path
             .0
@@ -54,10 +70,8 @@ impl VaultRelativePath {
             .and_then(|extension| extension.to_str())
             .unwrap_or_default();
 
-        if !extension.eq_ignore_ascii_case("md") {
-            return Err(ObsidianMcpError::InvalidPath(
-                "Only Markdown notes with the .md extension are supported".to_string(),
-            ));
+        if !extension.eq_ignore_ascii_case(expected) {
+            return Err(ObsidianMcpError::InvalidPath(error_message.to_string()));
         }
 
         Ok(path)
@@ -226,10 +240,18 @@ fn path_to_cli_arg(path: &Path) -> String {
 }
 
 pub(crate) fn has_markdown_extension(path: &str) -> bool {
+    has_extension(path, "md")
+}
+
+pub(crate) fn has_base_extension(path: &str) -> bool {
+    has_extension(path, "base")
+}
+
+fn has_extension(path: &str, expected: &str) -> bool {
     Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
 #[cfg(test)]
@@ -255,6 +277,18 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "Only Markdown notes with the .md extension are supported"
+        );
+        assert_eq!(
+            VaultRelativePath::base(r"Bases\Projects.base")
+                .unwrap()
+                .as_cli_arg(),
+            "Bases/Projects.base"
+        );
+        assert_eq!(
+            VaultRelativePath::base("Projects.md")
+                .unwrap_err()
+                .to_string(),
+            "Only Obsidian Bases with the .base extension are supported"
         );
         assert_eq!(
             VaultRelativePath::parse("/tmp/Rust.md")

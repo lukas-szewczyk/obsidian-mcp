@@ -63,6 +63,26 @@ pub struct AuditVaultRequest {
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ListBasesRequest {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct QueryBaseRequest {
+    pub path: String,
+    pub view: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateBaseItemRequest {
+    pub path: String,
+    pub view: String,
+    pub name: String,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct AppendDailyNoteRequest {
     pub content: String,
     pub inline: Option<bool>,
@@ -231,6 +251,28 @@ pub struct VaultAuditResponse {
     pub unresolved_link_count: usize,
     pub orphan_note_count: usize,
     pub dead_end_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ListBasesResponse {
+    pub bases: Vec<String>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct QueryBaseResponse {
+    pub path: String,
+    pub view: Option<String>,
+    pub results: Vec<rmcp::serde_json::Value>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct CreateBaseItemResponse {
+    pub path: String,
+    pub view: String,
+    pub name: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]

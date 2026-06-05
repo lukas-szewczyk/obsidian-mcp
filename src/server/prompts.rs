@@ -111,6 +111,18 @@ impl ObsidianMcp {
                 None,
             )
             .with_title("Audit vault graph"),
+            Prompt::new(
+                "base_review",
+                Some("Review the dynamic results of one Obsidian Base view."),
+                Some(vec![
+                    required_prompt_argument(
+                        "path",
+                        "Vault-relative Base path, for example Projects.base.",
+                    ),
+                    optional_prompt_argument("view", "Optional named Base view to query."),
+                ]),
+            )
+            .with_title("Review Obsidian Base"),
         ]
     }
 
@@ -261,6 +273,23 @@ impl ObsidianMcp {
                 "Read `obsidian://vault/audit`. Group unresolved links, orphan notes, and dead ends by impact. Use `get_note_context` only for the highest-impact notes when more relationship detail is needed. Recommend concrete link or organization improvements, cite note paths, and do not modify the vault.",
             )])
             .with_description("Audit the vault knowledge graph and recommend improvements.")),
+            "base_review" => {
+                let path = VaultRelativePath::base(&required_prompt_string(&request, "path")?)?;
+                let view = optional_prompt_string(&request, "view")
+                    .filter(|view| !view.trim().is_empty());
+                let view_instruction = view
+                    .as_deref()
+                    .map(|view| format!(" with named view `{view}`"))
+                    .unwrap_or_else(|| " using its default view".to_string());
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Use `query_base` for `{}`{view_instruction}. Analyze the returned dynamic records, summarize important groupings, risks, stale items, and concrete next actions. Cite note paths or file names from the results. Do not call `create_base_item` unless the user separately and explicitly requests creating an item.",
+                        path.as_cli_arg()
+                    ),
+                )])
+                .with_description("Review one Obsidian Base view."))
+            }
             _ => Err(ObsidianMcpError::ResourceNotFound(format!(
                 "Unknown Obsidian prompt: {}",
                 request.name
