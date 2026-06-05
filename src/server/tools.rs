@@ -281,6 +281,70 @@ impl ObsidianMcp {
     }
 
     #[tool(
+        description = "List Obsidian Base files in the vault.",
+        annotations(
+            title = "List Obsidian Bases",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_bases(
+        &self,
+        Parameters(ListBasesRequest { limit }): Parameters<ListBasesRequest>,
+    ) -> Result<Json<ListBasesResponse>, String> {
+        let bases = self.list_bases_data(limit).await.map_err(error_message)?;
+        Ok(Json(ListBasesResponse {
+            count: bases.len(),
+            bases,
+        }))
+    }
+
+    #[tool(
+        description = "Query an Obsidian Base's default or named view and return its dynamic JSON results.",
+        annotations(
+            title = "Query Obsidian Base",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn query_base(
+        &self,
+        Parameters(QueryBaseRequest { path, view, limit }): Parameters<QueryBaseRequest>,
+    ) -> Result<Json<QueryBaseResponse>, String> {
+        self.query_base_data(&path, view.as_deref(), limit)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
+        description = "Create a new note through an explicit Obsidian Base and named view.",
+        annotations(
+            title = "Create Base item",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn create_base_item(
+        &self,
+        Parameters(CreateBaseItemRequest {
+            path,
+            view,
+            name,
+            content,
+        }): Parameters<CreateBaseItemRequest>,
+    ) -> Result<Json<CreateBaseItemResponse>, String> {
+        self.create_base_item_data(&path, &view, &name, content.as_deref())
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
         description = "Read today's Obsidian daily note.",
         annotations(
             title = "Read daily note",

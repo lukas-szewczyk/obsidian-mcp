@@ -55,4 +55,12 @@
     <question>What alias belongs to Projects/Rust.md?</question>
     <answer>Rust Project</answer>
   </qa_pair>
+  <qa_pair>
+    <question>Which Base lists active project notes?</question>
+    <answer>Projects.base</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which project appears in the Active projects Base view?</question>
+    <answer>Projects/Rust.md</answer>
+  </qa_pair>
 </evaluation>

@@ -70,6 +70,9 @@ fn tool_contract_exposes_v030_work_system_names() {
         "preview_note_change",
         "get_note_context",
         "audit_vault",
+        "list_bases",
+        "query_base",
+        "create_base_item",
     ] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -379,6 +382,89 @@ async fn graph_context_validates_paths_and_clamps_limits() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn uses_cli_for_bases_workflow() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok("Z.base\nProjects.base\nimage.png\nProjects.base\n"),
+        Ok(
+            r#"[{"file.path":"Projects/Rust.md","status":"active"},{"file.path":"Projects/Home.md","status":"active"}]"#,
+        ),
+        Ok("Created Projects/New Project.md\n"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let bases = server.list_bases_data(Some(1)).await.unwrap();
+    let query = server
+        .query_base_data("Projects.base", Some("Active projects"), Some(1))
+        .await
+        .unwrap();
+    let created = server
+        .create_base_item_data(
+            "Projects.base",
+            "Active projects",
+            "New Project",
+            Some("# New\n"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bases, vec!["Projects.base"]);
+    assert_eq!(query.count, 1);
+    assert_eq!(query.view.as_deref(), Some("Active projects"));
+    assert_eq!(created.message, "Created Projects/New Project.md");
+    assert_eq!(
+        cli.calls()
+            .iter()
+            .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["bases"],
+            vec![
+                "base:query",
+                "path=Projects.base",
+                "format=json",
+                "view=Active projects",
+            ],
+            vec![
+                "base:create",
+                "path=Projects.base",
+                "view=Active projects",
+                "name=New Project",
+                "content=# New\\n",
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn bases_validate_paths_names_and_empty_list() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([Ok("No base files found in vault\n")]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    assert!(server.list_bases_data(None).await.unwrap().is_empty());
+    assert!(
+        server
+            .query_base_data("../Projects.base", None, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        server
+            .query_base_data("Projects.md", None, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        server
+            .create_base_item_data("Projects.base", "Active", "Folder/Name", None)
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
 }
 
 #[tokio::test]
@@ -731,6 +817,7 @@ async fn resource_descriptors_include_static_resources_and_notes() {
 
     assert!(uris.contains(&"obsidian://vault/info"));
     assert!(uris.contains(&"obsidian://vault/audit"));
+    assert!(uris.contains(&"obsidian://bases/index"));
     assert!(uris.contains(&"obsidian://notes/index"));
     assert!(uris.contains(&"obsidian://tags/index"));
     assert!(uris.contains(&"obsidian://daily/today"));
@@ -751,19 +838,21 @@ fn resource_templates_expose_note_uri_template() {
 
     let templates = server.list_resource_template_descriptors();
 
-    assert_eq!(templates.len(), 7);
+    assert_eq!(templates.len(), 8);
     assert_eq!(templates[0].uri_template, "obsidian://note/{path}");
     assert_eq!(templates[0].mime_type.as_deref(), Some("text/markdown"));
     assert_eq!(templates[1].uri_template, "obsidian://backlinks/{path}");
     assert_eq!(templates[1].mime_type.as_deref(), Some("text/plain"));
     assert_eq!(templates[2].uri_template, "obsidian://context/{path}");
     assert_eq!(templates[2].mime_type.as_deref(), Some("application/json"));
-    assert_eq!(templates[3].uri_template, "obsidian://daily/{date}");
-    assert_eq!(templates[3].mime_type.as_deref(), Some("text/markdown"));
-    assert_eq!(templates[4].uri_template, "obsidian://tasks/overdue/{date}");
-    assert_eq!(templates[4].mime_type.as_deref(), Some("application/json"));
-    assert_eq!(templates[5].uri_template, "obsidian://project/{path}");
-    assert_eq!(templates[6].uri_template, "obsidian://properties/{path}");
+    assert_eq!(templates[3].uri_template, "obsidian://base/{path}");
+    assert_eq!(templates[3].mime_type.as_deref(), Some("application/json"));
+    assert_eq!(templates[4].uri_template, "obsidian://daily/{date}");
+    assert_eq!(templates[4].mime_type.as_deref(), Some("text/markdown"));
+    assert_eq!(templates[5].uri_template, "obsidian://tasks/overdue/{date}");
+    assert_eq!(templates[5].mime_type.as_deref(), Some("application/json"));
+    assert_eq!(templates[6].uri_template, "obsidian://project/{path}");
+    assert_eq!(templates[7].uri_template, "obsidian://properties/{path}");
 }
 
 #[tokio::test]
@@ -882,6 +971,39 @@ async fn read_knowledge_graph_resources() {
 }
 
 #[tokio::test]
+async fn read_bases_resources() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok("Projects.base\n"),
+        Ok(r#"[{"file.path":"Projects/Rust.md","status":"active"}]"#),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let index = server
+        .read_resource_uri("obsidian://bases/index")
+        .await
+        .unwrap();
+    let base = server
+        .read_resource_uri("obsidian://base/Projects.base")
+        .await
+        .unwrap();
+
+    assert_resource_text_contains(&index, "Projects.base");
+    assert_resource_text_contains(&base, r#""path": "Projects.base""#);
+    assert_resource_text_contains(&base, r#""file.path": "Projects/Rust.md""#);
+    assert_eq!(
+        cli.calls()
+            .iter()
+            .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        vec![
+            vec!["bases"],
+            vec!["base:query", "path=Projects.base", "format=json"],
+        ]
+    );
+}
+
+#[tokio::test]
 async fn read_work_system_resources() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
@@ -981,6 +1103,14 @@ fn resource_uri_round_trips_percent_encoded_note_paths() {
         ObsidianResourceUri::VaultAudit
     );
     assert_eq!(
+        ObsidianResourceUri::parse("obsidian://bases/index").unwrap(),
+        ObsidianResourceUri::BasesIndex
+    );
+    assert_eq!(
+        ObsidianResourceUri::parse("obsidian://base/Folder/Space%20Base.base").unwrap(),
+        ObsidianResourceUri::Base(VaultRelativePath::base("Folder/Space Base.base").unwrap())
+    );
+    assert_eq!(
         ObsidianResourceUri::parse("obsidian://tasks/overdue/2026-06-05").unwrap(),
         ObsidianResourceUri::TasksOverdue(DailyDate::parse("2026-06-05").unwrap())
     );
@@ -1012,7 +1142,8 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
             "weekly_review",
             "project_review",
             "inbox_triage",
-            "vault_audit"
+            "vault_audit",
+            "base_review"
         ]
     );
 
@@ -1078,6 +1209,16 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
         .unwrap();
     assert_prompt_text_contains(&audit, "obsidian://vault/audit");
     assert_prompt_text_contains(&audit, "get_note_context");
+
+    let base = server
+        .get_prompt_result(prompt_request(
+            "base_review",
+            [("path", "Projects.base"), ("view", "Active projects")],
+        ))
+        .unwrap();
+    assert_prompt_text_contains(&base, "query_base");
+    assert_prompt_text_contains(&base, "Active projects");
+    assert_prompt_text_contains(&base, "Do not call `create_base_item`");
 }
 
 #[test]
@@ -1131,6 +1272,7 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         Ok("Missing Guide\t1\tStart.md\n"),
         Ok("Knowledge/Orphan.md\n"),
         Ok("Knowledge/Dead End.md\n"),
+        Ok("Projects.base\n"),
         Ok("Projects/Rust.md\n"),
         Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
     ]);
@@ -1182,6 +1324,11 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         .call_tool(CallToolRequestParams::new("audit_vault"))
         .await
         .unwrap();
+    let bases_result = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("list_bases"))
+        .await
+        .unwrap();
     let note_index = client
         .peer()
         .read_resource(ReadResourceRequestParams::new("obsidian://notes/index"))
@@ -1212,6 +1359,9 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     assert!(tools.iter().any(|tool| tool.name == "get_project_status"));
     assert!(tools.iter().any(|tool| tool.name == "get_note_context"));
     assert!(tools.iter().any(|tool| tool.name == "audit_vault"));
+    assert!(tools.iter().any(|tool| tool.name == "list_bases"));
+    assert!(tools.iter().any(|tool| tool.name == "query_base"));
+    assert!(tools.iter().any(|tool| tool.name == "create_base_item"));
     assert!(
         resources
             .iter()
@@ -1221,6 +1371,11 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         resources
             .iter()
             .any(|resource| resource.uri == "obsidian://vault/audit")
+    );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource.uri == "obsidian://bases/index")
     );
     assert!(
         templates
@@ -1237,12 +1392,19 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
             .iter()
             .any(|template| template.uri_template == "obsidian://context/{path}")
     );
+    assert!(
+        templates
+            .iter()
+            .any(|template| template.uri_template == "obsidian://base/{path}")
+    );
     assert!(prompts.iter().any(|prompt| prompt.name == "weekly_review"));
     assert!(prompts.iter().any(|prompt| prompt.name == "plan_day"));
     assert!(prompts.iter().any(|prompt| prompt.name == "vault_audit"));
+    assert!(prompts.iter().any(|prompt| prompt.name == "base_review"));
     assert!(!task_result.is_error.unwrap_or(false));
     assert!(!overdue_result.is_error.unwrap_or(false));
     assert!(!audit_result.is_error.unwrap_or(false));
+    assert!(!bases_result.is_error.unwrap_or(false));
     assert_resource_text_contains(&note_index, "Projects/Rust.md");
     assert_resource_text_contains(&overdue_resource, "2026-06-01");
     assert_prompt_text_contains(&weekly, "read_daily_notes");
@@ -1296,6 +1458,18 @@ async fn real_cli_smoke_knowledge_graph_reads() {
         .await
         .unwrap();
     server.audit_vault_data(Some(10)).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
+async fn real_cli_smoke_bases_reads() {
+    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
+    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+
+    let bases = server.list_bases_data(Some(10)).await.unwrap();
+    if let Some(path) = bases.first() {
+        server.query_base_data(path, None, Some(10)).await.unwrap();
+    }
 }
 
 fn prompt_request<const N: usize>(

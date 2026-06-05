@@ -1,0 +1,13 @@
+filters:
+  and:
+    - 'file.inFolder("Projects")'
+views:
+  - type: table
+    name: Active projects
+    filters:
+      and:
+        - 'status == "active"'
+    order:
+      - file.name
+      - status
+      - priority

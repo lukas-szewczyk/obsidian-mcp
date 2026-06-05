@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - Inspector fixture project with frontmatter and dated tasks.
 - Stable read-only evaluation questions for the Work System fixture.
 - Read-only note context and vault graph audit tools, resources, and prompt.
+- Obsidian Bases listing, querying, explicit item creation, resources, and review prompt.
 
 ### Changed
 

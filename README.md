@@ -2,7 +2,7 @@
 
 `obsidian-mcp` is a local [Model Context Protocol](https://modelcontextprotocol.io/) server that lets Codex work with an Obsidian vault through the official Obsidian CLI.
 
-The server runs over stdio, keeps Obsidian as the source of truth, and exposes focused tools, resources, and prompts for notes, daily notes, tasks, tags, backlinks, and project workflows.
+The server runs over stdio, keeps Obsidian as the source of truth, and exposes focused tools, resources, and prompts for notes, Bases, daily notes, tasks, tags, backlinks, and project workflows.
 
 The current source tree targets `v0.3.0`. The latest published GitHub Release is `v0.2.0`.
 
@@ -23,6 +23,8 @@ The current source tree targets `v0.3.0`. The latest published GitHub Release is
 - `preview_note_change` shows exact proposed note contents without writing.
 - `set_property` supports a read-only preview mode.
 - Task and append operations are explicit and non-idempotent where appropriate.
+- `create_base_item` requires an explicit Base path, named view, and item name.
+- The server queries Bases but does not create or edit `.base` definitions.
 - The server does not expose delete, move, rename, or generic CLI execution.
 - MCP protocol output is written to stdout; diagnostics are written to stderr.
 
@@ -96,6 +98,9 @@ Restart Codex after changing MCP configuration.
 | `list_backlinks` | List backlinks to a note |
 | `get_note_context` | Read aliases, outline, outgoing links, and backlinks for one note |
 | `audit_vault` | Audit unresolved links, orphan notes, and dead ends |
+| `list_bases` | List Obsidian Base files in the vault |
+| `query_base` | Query a Base's default or named view as dynamic JSON |
+| `create_base_item` | Create a note through an explicit Base and named view |
 | `read_daily_note` | Read today's daily note |
 | `append_daily_note` | Append text to today's daily note |
 | `read_daily_notes` | Read an inclusive date range of daily notes |
@@ -128,12 +133,15 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 
 `preview` defaults to `true`. Use the same request with `preview=false` only after reviewing the previous value returned by the preview.
 
+Base queries return the dynamic JSON columns configured by the selected view. `create_base_item` does not support preview because Obsidian determines the new note's properties and location from the named view.
+
 ### Resources
 
 | Resource | Content |
 | --- | --- |
 | `obsidian://vault/info` | Vault metadata |
 | `obsidian://vault/audit` | Knowledge graph audit with unresolved links, orphan notes, and dead ends |
+| `obsidian://bases/index` | Obsidian Base paths |
 | `obsidian://notes/index` | Markdown note paths |
 | `obsidian://tags/index` | Tags with counts |
 | `obsidian://daily/today` | Today's daily note |
@@ -142,6 +150,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 | `obsidian://note/{path}` | One Markdown note |
 | `obsidian://backlinks/{path}` | Backlinks for one note |
 | `obsidian://context/{path}` | One-hop metadata context for one note |
+| `obsidian://base/{path}` | Dynamic JSON results from a Base's default view |
 | `obsidian://daily/{date}` | One daily note by `YYYY-MM-DD` |
 | `obsidian://tasks/overdue/{date}` | Incomplete tasks due before a date |
 | `obsidian://project/{path}` | Project note with properties, tasks, and backlinks |
@@ -162,6 +171,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 | `project_review` | Review a project note, backlinks, and project tasks |
 | `inbox_triage` | Triage open tasks and inbox-like notes |
 | `vault_audit` | Review graph quality and recommend prioritized improvements |
+| `base_review` | Review one Base view and propose next actions |
 
 ## Development
 

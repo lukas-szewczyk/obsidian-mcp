@@ -25,3 +25,6 @@ Try these MCP tools from the Inspector:
 - `preview_note_change`
 - `get_note_context` with `path` set to `Start.md`
 - `audit_vault`
+- `list_bases`
+- `query_base` with `path` set to `Projects.base`
+- `create_base_item` with `path` set to `Projects.base` and `view` set to `Active projects`
