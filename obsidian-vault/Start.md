@@ -11,3 +11,9 @@ Try these MCP tools from the Inspector:
 - `replace_note` with an existing `.md` path
 - `append_note`
 - `search_notes`
+- `list_properties` with `path` set to `Projects/Rust.md`
+- `set_property` with `preview` set to `true`
+- `list_overdue_tasks` with `as_of` set to `2026-06-05`
+- `list_tasks_by_project` with `path` set to `Projects/Rust.md`
+- `get_project_status` with `path` set to `Projects/Rust.md`
+- `preview_note_change`

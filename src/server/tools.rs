@@ -410,4 +410,164 @@ impl ObsidianMcp {
             projects,
         }))
     }
+
+    #[tool(
+        description = "List structured frontmatter properties for one Markdown note.",
+        annotations(
+            title = "List note properties",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_properties(
+        &self,
+        Parameters(ListPropertiesRequest { path }): Parameters<ListPropertiesRequest>,
+    ) -> Result<Json<ListPropertiesResponse>, String> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+        let properties = self
+            .list_properties_data(&normalized_path.as_cli_arg())
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ListPropertiesResponse {
+            path: normalized_path.as_cli_arg(),
+            count: properties.len(),
+            properties,
+        }))
+    }
+
+    #[tool(
+        description = "Set a typed frontmatter property on an existing Markdown note, or preview the change without writing.",
+        annotations(
+            title = "Set note property",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_property(
+        &self,
+        Parameters(SetPropertyRequest {
+            path,
+            name,
+            value,
+            property_type,
+            preview,
+        }): Parameters<SetPropertyRequest>,
+    ) -> Result<Json<SetPropertyResponse>, String> {
+        self.set_property_data(
+            &path,
+            &name,
+            &value,
+            property_type.as_ref(),
+            preview.unwrap_or(true),
+        )
+        .await
+        .map(Json)
+        .map_err(error_message)
+    }
+
+    #[tool(
+        description = "List incomplete tasks with a due date before an explicit YYYY-MM-DD date.",
+        annotations(
+            title = "List overdue tasks",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_overdue_tasks(
+        &self,
+        Parameters(ListOverdueTasksRequest {
+            as_of,
+            target,
+            limit,
+        }): Parameters<ListOverdueTasksRequest>,
+    ) -> Result<Json<ListOverdueTasksResponse>, String> {
+        let as_of = DailyDate::parse(&as_of).map_err(error_message)?.to_string();
+        let target = target.unwrap_or_default();
+        let tasks = self
+            .list_overdue_tasks_data(&as_of, &target, limit)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ListOverdueTasksResponse {
+            as_of,
+            target,
+            count: tasks.len(),
+            tasks,
+        }))
+    }
+
+    #[tool(
+        description = "List tasks belonging to one project note.",
+        annotations(
+            title = "List project tasks",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_tasks_by_project(
+        &self,
+        Parameters(ListTasksByProjectRequest {
+            path,
+            status,
+            limit,
+        }): Parameters<ListTasksByProjectRequest>,
+    ) -> Result<Json<ListTasksByProjectResponse>, String> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+        let tasks = self
+            .list_tasks_by_project_data(&normalized_path.as_cli_arg(), status.as_ref(), limit)
+            .await
+            .map_err(error_message)?;
+        Ok(Json(ListTasksByProjectResponse {
+            path: normalized_path.as_cli_arg(),
+            status,
+            count: tasks.len(),
+            tasks,
+        }))
+    }
+
+    #[tool(
+        description = "Read one project note with its properties, open and completed tasks, and backlinks.",
+        annotations(
+            title = "Get project status",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_project_status(
+        &self,
+        Parameters(GetProjectStatusRequest { path, limit }): Parameters<GetProjectStatusRequest>,
+    ) -> Result<Json<ProjectStatusResponse>, String> {
+        self.get_project_status_data(&path, limit)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
+        description = "Preview the exact contents produced by creating, replacing, or appending to a Markdown note without modifying the vault.",
+        annotations(
+            title = "Preview note change",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn preview_note_change(
+        &self,
+        Parameters(PreviewNoteChangeRequest {
+            path,
+            mode,
+            content,
+        }): Parameters<PreviewNoteChangeRequest>,
+    ) -> Result<Json<PreviewNoteChangeResponse>, String> {
+        self.preview_note_change_data(&path, &mode, &content)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
 }

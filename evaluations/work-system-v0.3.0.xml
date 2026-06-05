@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>Which project note has the frontmatter status active?</question>
+    <answer>Projects/Rust.md</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the priority property of Projects/Rust.md?</question>
+    <answer>high</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many incomplete tasks belong to Projects/Rust.md?</question>
+    <answer>1</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the incomplete task in Projects/Rust.md?</question>
+    <answer>Build work system v0.3.0</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the due date of the incomplete task in Projects/Rust.md?</question>
+    <answer>2026-06-12</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What completed task is recorded in Projects/Rust.md?</question>
+    <answer>Publish v0.2.0</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many incomplete tasks are overdue as of 2026-06-05?</question>
+    <answer>1</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which incomplete task is overdue as of 2026-06-05?</question>
+    <answer>Review overdue work</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which note contains the overdue task Review overdue work?</question>
+    <answer>Todo.md</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What task is due on 2026-06-15?</question>
+    <answer>Plan next release</answer>
+  </qa_pair>
+</evaluation>

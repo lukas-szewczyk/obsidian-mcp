@@ -52,6 +52,15 @@ impl ObsidianMcp {
             )
             .with_title("Daily review"),
             Prompt::new(
+                "plan_day",
+                Some("Plan one day from its daily note, overdue tasks, and active projects."),
+                Some(vec![required_prompt_argument(
+                    "date",
+                    "Date to plan in YYYY-MM-DD format.",
+                )]),
+            )
+            .with_title("Plan day"),
+            Prompt::new(
                 "tag_overview",
                 Some("Summarize how a tag is used across the vault."),
                 Some(vec![required_prompt_argument(
@@ -137,7 +146,7 @@ impl ObsidianMcp {
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Prepare a Markdown update for `{}` based on this intent: {intent}\n\nFirst read `{uri}` if it exists. Draft the exact text to append, create, or replace. Do not call `append_note`, `create_note`, or `replace_note` until the user approves the final text.",
+                        "Prepare a Markdown update for `{}` based on this intent: {intent}\n\nFirst read `{uri}` if it exists, then use `preview_note_change` to show the exact proposed result. Do not call `append_note`, `create_note`, or `replace_note` until the user approves the preview.",
                         normalized_path.as_cli_arg()
                     ),
                 )])
@@ -148,6 +157,18 @@ impl ObsidianMcp {
                 "Read `obsidian://daily/today`, summarize today's note, extract commitments and open loops, then propose a short prioritized plan. Do not modify the vault.",
             )])
             .with_description("Review today's daily note.")),
+            "plan_day" => {
+                let date = DailyDate::parse(&required_prompt_string(&request, "date")?)?;
+                let daily_uri = ObsidianResourceUri::daily(&date);
+                let overdue_uri = ObsidianResourceUri::tasks_overdue(&date);
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Read `{daily_uri}` and `{overdue_uri}`. Use `list_tasks` with status `{{\"type\":\"todo\"}}`, then inspect relevant projects with `get_project_status`. Produce a realistic plan for `{date}` with three priorities, time-sensitive tasks, project next actions, and items to defer. Do not modify the vault."
+                    ),
+                )])
+                .with_description("Plan one day from the work system."))
+            }
             "tag_overview" => {
                 let tag = required_prompt_string(&request, "tag")?;
                 let normalized_tag = if tag.trim_start().starts_with('#') {
@@ -187,7 +208,8 @@ impl ObsidianMcp {
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Use `read_daily_notes` from `{from}` to `{to}` and `list_tasks` with status `{{\"type\":\"todo\"}}`. Review commitments, unfinished tasks, recurring themes, stale items, and a short next-week plan. Read relevant `obsidian://note/{{path}}` resources when task context is unclear. Do not modify the vault."
+                        "Use `read_daily_notes` from `{from}` to `{to}`, read `{}`, and use `list_tasks` with status `{{\"type\":\"todo\"}}`. Review commitments, overdue and unfinished tasks, recurring themes, stale items, active project risks, and a short next-week plan. Use `get_project_status` for relevant project notes. Do not modify the vault.",
+                        ObsidianResourceUri::tasks_overdue(&to)
                     ),
                 )])
                 .with_description("Review daily notes and open tasks for a date range."))
@@ -200,7 +222,7 @@ impl ObsidianMcp {
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Read project note `{note_uri}`, backlinks `{backlinks_uri}`, and use `list_tasks` with target `{{\"type\":\"note\",\"path\":\"{}\"}}`. Summarize current state, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
+                        "Use `get_project_status` for `{}`. Read project note `{note_uri}` and backlinks `{backlinks_uri}` only when more detail is needed. Summarize current state, properties, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
                         normalized_path.as_cli_arg()
                     ),
                 )])
