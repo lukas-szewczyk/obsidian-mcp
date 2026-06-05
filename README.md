@@ -94,6 +94,8 @@ Restart Codex after changing MCP configuration.
 | `search_notes` | Search notes with matching context |
 | `list_tags` | List vault or note tags |
 | `list_backlinks` | List backlinks to a note |
+| `get_note_context` | Read aliases, outline, outgoing links, and backlinks for one note |
+| `audit_vault` | Audit unresolved links, orphan notes, and dead ends |
 | `read_daily_note` | Read today's daily note |
 | `append_daily_note` | Append text to today's daily note |
 | `read_daily_notes` | Read an inclusive date range of daily notes |
@@ -131,6 +133,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 | Resource | Content |
 | --- | --- |
 | `obsidian://vault/info` | Vault metadata |
+| `obsidian://vault/audit` | Knowledge graph audit with unresolved links, orphan notes, and dead ends |
 | `obsidian://notes/index` | Markdown note paths |
 | `obsidian://tags/index` | Tags with counts |
 | `obsidian://daily/today` | Today's daily note |
@@ -138,6 +141,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 | `obsidian://projects/index` | Project note paths |
 | `obsidian://note/{path}` | One Markdown note |
 | `obsidian://backlinks/{path}` | Backlinks for one note |
+| `obsidian://context/{path}` | One-hop metadata context for one note |
 | `obsidian://daily/{date}` | One daily note by `YYYY-MM-DD` |
 | `obsidian://tasks/overdue/{date}` | Incomplete tasks due before a date |
 | `obsidian://project/{path}` | Project note with properties, tasks, and backlinks |
@@ -157,6 +161,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 | `weekly_review` | Review a range of daily notes and open tasks |
 | `project_review` | Review a project note, backlinks, and project tasks |
 | `inbox_triage` | Triage open tasks and inbox-like notes |
+| `vault_audit` | Review graph quality and recommend prioritized improvements |
 
 ## Development
 

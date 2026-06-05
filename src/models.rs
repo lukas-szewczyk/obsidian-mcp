@@ -52,6 +52,17 @@ pub struct ListBacklinksRequest {
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct GetNoteContextRequest {
+    pub path: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct AuditVaultRequest {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct AppendDailyNoteRequest {
     pub content: String,
     pub inline: Option<bool>,
@@ -190,6 +201,36 @@ pub struct ListBacklinksResponse {
     pub path: String,
     pub backlinks: Vec<String>,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct NoteContextResponse {
+    pub path: String,
+    pub aliases: Vec<String>,
+    pub outline: Vec<String>,
+    pub outgoing_links: Vec<String>,
+    pub backlinks: Vec<String>,
+    pub alias_count: usize,
+    pub outline_count: usize,
+    pub outgoing_link_count: usize,
+    pub backlink_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct UnresolvedLinkItem {
+    pub link: String,
+    pub count: usize,
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct VaultAuditResponse {
+    pub unresolved_links: Vec<UnresolvedLinkItem>,
+    pub orphan_notes: Vec<String>,
+    pub dead_ends: Vec<String>,
+    pub unresolved_link_count: usize,
+    pub orphan_note_count: usize,
+    pub dead_end_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]

@@ -243,6 +243,44 @@ impl ObsidianMcp {
     }
 
     #[tool(
+        description = "Read one note's aliases, outline, direct outgoing links, and backlinks without reading neighboring note contents.",
+        annotations(
+            title = "Get note context",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_note_context(
+        &self,
+        Parameters(GetNoteContextRequest { path, limit }): Parameters<GetNoteContextRequest>,
+    ) -> Result<Json<NoteContextResponse>, String> {
+        self.get_note_context_data(&path, limit)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
+        description = "Audit the Markdown knowledge graph for unresolved links, orphan notes, and dead ends.",
+        annotations(
+            title = "Audit vault graph",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn audit_vault(
+        &self,
+        Parameters(AuditVaultRequest { limit }): Parameters<AuditVaultRequest>,
+    ) -> Result<Json<VaultAuditResponse>, String> {
+        self.audit_vault_data(limit)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
         description = "Read today's Obsidian daily note.",
         annotations(
             title = "Read daily note",

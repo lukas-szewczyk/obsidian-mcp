@@ -39,4 +39,20 @@
     <question>What task is due on 2026-06-15?</question>
     <answer>Plan next release</answer>
   </qa_pair>
+  <qa_pair>
+    <question>Which unresolved link is present in the test vault?</question>
+    <answer>Missing Guide</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which note is explicitly designed as an orphan in the graph audit fixture?</question>
+    <answer>Knowledge/Orphan.md</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which note is explicitly designed as a dead end in the graph audit fixture?</question>
+    <answer>Knowledge/Dead End.md</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What alias belongs to Projects/Rust.md?</question>
+    <answer>Rust Project</answer>
+  </qa_pair>
 </evaluation>

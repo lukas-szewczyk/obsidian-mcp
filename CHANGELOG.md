@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - `plan_day` prompt plus project, properties, and overdue-task resource templates.
 - Inspector fixture project with frontmatter and dated tasks.
 - Stable read-only evaluation questions for the Work System fixture.
+- Read-only note context and vault graph audit tools, resources, and prompt.
 
 ### Changed
 

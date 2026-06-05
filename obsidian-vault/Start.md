@@ -2,6 +2,12 @@
 
 This vault lives inside the project and is used as the default vault for local MCP Inspector runs.
 
+Related notes:
+
+- [[Projects/Rust]]
+- [[Knowledge/Dead End]]
+- [[Missing Guide]]
+
 Try these MCP tools from the Inspector:
 
 - `vault_info`
@@ -17,3 +23,5 @@ Try these MCP tools from the Inspector:
 - `list_tasks_by_project` with `path` set to `Projects/Rust.md`
 - `get_project_status` with `path` set to `Projects/Rust.md`
 - `preview_note_change`
+- `get_note_context` with `path` set to `Start.md`
+- `audit_vault`

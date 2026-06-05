@@ -1,3 +1,4 @@
+mod knowledge_graph;
 mod prompts;
 mod resources;
 mod tools;
@@ -502,7 +503,7 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, frontmatter properties, daily notes, tasks, overdue work, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Use create_note only for missing notes and replace_note only for existing notes. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
+            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Use create_note only for missing notes and replace_note only for existing notes. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
     }
 }
 
