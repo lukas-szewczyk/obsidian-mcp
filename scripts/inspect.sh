@@ -25,6 +25,9 @@ fi
 if [[ -n "${OBSIDIAN_VAULT_NAME:-}" ]]; then
   ENV_ARGS+=(-e "OBSIDIAN_VAULT_NAME=$OBSIDIAN_VAULT_NAME")
 fi
+if [[ -n "${OBSIDIAN_PROJECTS_PATH:-}" ]]; then
+  ENV_ARGS+=(-e "OBSIDIAN_PROJECTS_PATH=$OBSIDIAN_PROJECTS_PATH")
+fi
 
 exec npx -y @modelcontextprotocol/inspector \
   "${ENV_ARGS[@]}" \
