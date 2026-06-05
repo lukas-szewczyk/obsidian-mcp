@@ -105,6 +105,12 @@ impl ObsidianMcp {
                 )]),
             )
             .with_title("Inbox triage"),
+            Prompt::new(
+                "vault_audit",
+                Some("Review vault graph quality and recommend prioritized link improvements."),
+                None,
+            )
+            .with_title("Audit vault graph"),
         ]
     }
 
@@ -250,6 +256,11 @@ impl ObsidianMcp {
                 )])
                 .with_description("Triage open tasks and inbox-like notes."))
             }
+            "vault_audit" => Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                "Read `obsidian://vault/audit`. Group unresolved links, orphan notes, and dead ends by impact. Use `get_note_context` only for the highest-impact notes when more relationship detail is needed. Recommend concrete link or organization improvements, cite note paths, and do not modify the vault.",
+            )])
+            .with_description("Audit the vault knowledge graph and recommend improvements.")),
             _ => Err(ObsidianMcpError::ResourceNotFound(format!(
                 "Unknown Obsidian prompt: {}",
                 request.name

@@ -8,6 +8,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ObsidianResourceUri {
     VaultInfo,
+    VaultAudit,
     NotesIndex,
     TagsIndex,
     DailyToday,
@@ -17,12 +18,14 @@ pub(super) enum ObsidianResourceUri {
     ProjectsIndex,
     Note(VaultRelativePath),
     Backlinks(VaultRelativePath),
+    Context(VaultRelativePath),
     Project(VaultRelativePath),
     Properties(VaultRelativePath),
 }
 
 impl ObsidianResourceUri {
     const VAULT_INFO: &'static str = "obsidian://vault/info";
+    const VAULT_AUDIT: &'static str = "obsidian://vault/audit";
     const NOTES_INDEX: &'static str = "obsidian://notes/index";
     const TAGS_INDEX: &'static str = "obsidian://tags/index";
     const DAILY_TODAY: &'static str = "obsidian://daily/today";
@@ -32,12 +35,14 @@ impl ObsidianResourceUri {
     const PROJECTS_INDEX: &'static str = "obsidian://projects/index";
     const NOTE_PREFIX: &'static str = "obsidian://note/";
     const BACKLINKS_PREFIX: &'static str = "obsidian://backlinks/";
+    const CONTEXT_PREFIX: &'static str = "obsidian://context/";
     const PROJECT_PREFIX: &'static str = "obsidian://project/";
     const PROPERTIES_PREFIX: &'static str = "obsidian://properties/";
 
     pub(super) fn parse(uri: &str) -> AppResult<Self> {
         match uri {
             Self::VAULT_INFO => Ok(Self::VaultInfo),
+            Self::VAULT_AUDIT => Ok(Self::VaultAudit),
             Self::NOTES_INDEX => Ok(Self::NotesIndex),
             Self::TAGS_INDEX => Ok(Self::TagsIndex),
             Self::DAILY_TODAY => Ok(Self::DailyToday),
@@ -50,6 +55,9 @@ impl ObsidianResourceUri {
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::BACKLINKS_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Backlinks(VaultRelativePath::markdown(&decoded_path)?))
+                } else if let Some(encoded_path) = uri.strip_prefix(Self::CONTEXT_PREFIX) {
+                    let decoded_path = percent_decode_uri_path(encoded_path)?;
+                    Ok(Self::Context(VaultRelativePath::markdown(&decoded_path)?))
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::PROJECT_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Project(VaultRelativePath::markdown(&decoded_path)?))
@@ -91,6 +99,14 @@ impl ObsidianResourceUri {
         )
     }
 
+    pub(super) fn context(path: &VaultRelativePath) -> String {
+        format!(
+            "{}{}",
+            Self::CONTEXT_PREFIX,
+            percent_encode_uri_path(&path.as_cli_arg())
+        )
+    }
+
     pub(super) fn project(path: &VaultRelativePath) -> String {
         format!(
             "{}{}",
@@ -116,6 +132,7 @@ impl ObsidianMcp {
     pub async fn list_resource_descriptors(&self) -> AppResult<Vec<Resource>> {
         let mut resources = vec![
             vault_info_resource(),
+            vault_audit_resource(),
             notes_index_resource(),
             tags_index_resource(),
             daily_today_resource(),
@@ -126,6 +143,7 @@ impl ObsidianMcp {
             let path = VaultRelativePath::markdown(&note)?;
             resources.push(note_resource(&path));
             resources.push(backlinks_resource(&path));
+            resources.push(context_resource(&path));
         }
         Ok(resources)
     }
@@ -141,6 +159,13 @@ impl ObsidianMcp {
                 .with_title("Obsidian backlinks")
                 .with_description("Read backlinks for a Markdown note by vault-relative path.")
                 .with_mime_type("text/plain")
+                .no_annotation(),
+            RawResourceTemplate::new("obsidian://context/{path}", "obsidian_context_by_path")
+                .with_title("Obsidian note context")
+                .with_description(
+                    "Read aliases, outline, outgoing links, and backlinks for one Markdown note.",
+                )
+                .with_mime_type("application/json")
                 .no_annotation(),
             RawResourceTemplate::new("obsidian://daily/{date}", "obsidian_daily_by_date")
                 .with_title("Obsidian daily note")
@@ -181,6 +206,11 @@ impl ObsidianMcp {
                 let info = self.vault_info_data().await?;
                 ResourceContents::text(format_vault_info_resource(&info), uri)
                     .with_mime_type("text/plain")
+            }
+            ObsidianResourceUri::VaultAudit => {
+                let audit = self.audit_vault_data(Some(1_000)).await?;
+                ResourceContents::text(serialize_resource_json(&audit)?, uri)
+                    .with_mime_type("application/json")
             }
             ObsidianResourceUri::NotesIndex => {
                 let notes = self.list_note_paths(None, Some(2_000)).await?;
@@ -235,6 +265,16 @@ impl ObsidianMcp {
                 ResourceContents::text(backlinks.join("\n"), ObsidianResourceUri::backlinks(&path))
                     .with_mime_type("text/plain")
             }
+            ObsidianResourceUri::Context(path) => {
+                let context = self
+                    .get_note_context_data(&path.as_cli_arg(), Some(1_000))
+                    .await?;
+                ResourceContents::text(
+                    serialize_resource_json(&context)?,
+                    ObsidianResourceUri::context(&path),
+                )
+                .with_mime_type("application/json")
+            }
             ObsidianResourceUri::Project(path) => {
                 let status = self
                     .get_project_status_data(&path.as_cli_arg(), Some(500))
@@ -285,6 +325,14 @@ fn vault_info_resource() -> Resource {
             "Configured vault path, Obsidian-reported vault identity, and note count.",
         )
         .with_mime_type("text/plain")
+        .no_annotation()
+}
+
+fn vault_audit_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::VAULT_AUDIT, "obsidian_vault_audit")
+        .with_title("Obsidian vault graph audit")
+        .with_description("Unresolved links, orphan notes, and dead ends in the Markdown vault.")
+        .with_mime_type("application/json")
         .no_annotation()
 }
 
@@ -348,6 +396,16 @@ fn backlinks_resource(path: &VaultRelativePath) -> Resource {
         .with_title(format!("Backlinks for {path}"))
         .with_description("Backlinks to this Markdown note in the configured Obsidian vault.")
         .with_mime_type("text/plain")
+        .no_annotation()
+}
+
+fn context_resource(path: &VaultRelativePath) -> Resource {
+    let uri = ObsidianResourceUri::context(path);
+    let path = path.as_cli_arg();
+    RawResource::new(uri, format!("obsidian_context:{path}"))
+        .with_title(format!("Knowledge graph context for {path}"))
+        .with_description("Aliases, outline, outgoing links, and backlinks for this Markdown note.")
+        .with_mime_type("application/json")
         .no_annotation()
 }
 
