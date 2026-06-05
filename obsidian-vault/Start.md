@@ -7,6 +7,7 @@ Try these MCP tools from the Inspector:
 - `vault_info`
 - `list_notes`
 - `read_note` with `path` set to `Start.md`
-- `write_note` with a new `.md` path
+- `create_note` with a new `.md` path
+- `replace_note` with an existing `.md` path
 - `append_note`
 - `search_notes`
