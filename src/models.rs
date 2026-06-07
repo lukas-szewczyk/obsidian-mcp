@@ -162,6 +162,24 @@ pub struct PreviewNoteChangeRequest {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ChangeSetOperation {
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub content: String,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct PreviewChangeSetRequest {
+    pub changes: Vec<ChangeSetOperation>,
+}
+
+#[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
+pub struct ApplyChangeSetRequest {
+    pub changes: Vec<ChangeSetOperation>,
+    pub preview_token: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct VaultInfoResponse {
     pub configured_vault_path: String,
@@ -494,6 +512,57 @@ pub struct PreviewNoteChangeResponse {
     pub exists: bool,
     pub current_content: Option<String>,
     pub proposed_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct PreviewChangeSetItem {
+    pub index: usize,
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub exists: bool,
+    pub current_content: Option<String>,
+    pub proposed_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct PreviewChangeSetResponse {
+    pub preview_token: String,
+    pub changes: Vec<PreviewChangeSetItem>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeSetApplyOutcome {
+    Applied,
+    Conflict,
+    PartialFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct AppliedChangeSetItem {
+    pub index: usize,
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct FailedChangeSetItem {
+    pub index: usize,
+    pub path: String,
+    pub mode: NoteChangeMode,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ApplyChangeSetResponse {
+    pub outcome: ChangeSetApplyOutcome,
+    pub expected_preview_token: String,
+    pub observed_preview_token: String,
+    pub applied: Vec<AppliedChangeSetItem>,
+    pub failed: Option<FailedChangeSetItem>,
+    pub skipped: Vec<usize>,
 }
 
 #[cfg(test)]
