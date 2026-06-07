@@ -21,6 +21,8 @@ The current source tree targets `v0.3.0`. The latest published GitHub Release is
 - `create_note` refuses to replace an existing note.
 - `replace_note` refuses to create a missing note.
 - `preview_note_change` shows exact proposed note contents without writing.
+- `preview_change_set` preflights every operation before writing and returns a deterministic approval token.
+- `apply_change_set` refuses all writes when the approved token no longer matches current note state.
 - `set_property` supports a read-only preview mode.
 - Task and append operations are explicit and non-idempotent where appropriate.
 - `create_base_item` requires an explicit Base path, named view, and item name.
@@ -114,6 +116,8 @@ Restart Codex after changing MCP configuration.
 | `list_tasks_by_project` | List tasks belonging to one project note |
 | `get_project_status` | Read a project with properties, tasks, and backlinks |
 | `preview_note_change` | Preview create, replace, or append results without writing |
+| `preview_change_set` | Preview one to fifty note changes and return an approval token |
+| `apply_change_set` | Apply an approved change set after a fresh full preflight |
 
 Typed task values use tagged JSON:
 
@@ -134,6 +138,8 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 `preview` defaults to `true`. Use the same request with `preview=false` only after reviewing the previous value returned by the preview.
 
 Base queries return the dynamic JSON columns configured by the selected view. `create_base_item` does not support preview because Obsidian determines the new note's properties and location from the named view.
+
+For multi-note writes, send the same ordered `changes` array to `preview_change_set` and `apply_change_set`, together with the accepted `preview_token`. A changed note or operation produces `conflict` and no writes. A write error after application starts produces `partial_failure`; earlier writes remain applied and later operations are skipped.
 
 ### Resources
 
@@ -163,6 +169,7 @@ Base queries return the dynamic JSON columns configured by the selected view. `c
 | `summarize_note` | Summarize a note and extract follow-up items |
 | `search_and_synthesize` | Search the vault and synthesize relevant context |
 | `draft_note_update` | Draft an approved create, replace, or append operation |
+| `draft_change_set` | Draft and preview a guarded multi-note change set |
 | `daily_review` | Review today's daily note |
 | `plan_day` | Plan one explicit date from daily notes, overdue tasks, and projects |
 | `tag_overview` | Summarize how a tag is used |

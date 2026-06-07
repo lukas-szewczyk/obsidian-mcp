@@ -1,4 +1,5 @@
 mod bases;
+mod change_sets;
 mod knowledge_graph;
 mod prompts;
 mod resources;
@@ -507,7 +508,7 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
+            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. For multi-note changes, use preview_change_set and call apply_change_set only after the user explicitly accepts its preview token. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
     }
 }
 

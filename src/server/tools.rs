@@ -672,4 +672,46 @@ impl ObsidianMcp {
             .map(Json)
             .map_err(error_message)
     }
+
+    #[tool(
+        description = "Preflight one to fifty note create, replace, or append operations and return exact proposed contents plus a deterministic approval token without modifying the vault.",
+        annotations(
+            title = "Preview note change set",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn preview_change_set(
+        &self,
+        Parameters(PreviewChangeSetRequest { changes }): Parameters<PreviewChangeSetRequest>,
+    ) -> Result<Json<PreviewChangeSetResponse>, String> {
+        self.preview_change_set_data(changes)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
+
+    #[tool(
+        description = "Apply an explicitly approved note change set only if a fresh full preflight produces the same preview token.",
+        annotations(
+            title = "Apply note change set",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn apply_change_set(
+        &self,
+        Parameters(ApplyChangeSetRequest {
+            changes,
+            preview_token,
+        }): Parameters<ApplyChangeSetRequest>,
+    ) -> Result<Json<ApplyChangeSetResponse>, String> {
+        self.apply_change_set_data(changes, &preview_token)
+            .await
+            .map(Json)
+            .map_err(error_message)
+    }
 }

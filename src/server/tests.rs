@@ -49,10 +49,9 @@ fn task_status_and_content_validate_workflow_inputs() {
 fn tool_contract_exposes_v030_work_system_names() {
     let vault = TestVault::new();
     let server = ObsidianMcp::with_runner(vault.path(), FakeObsidianCli::default()).unwrap();
-    let names = server
-        .tool_router
-        .list_all()
-        .into_iter()
+    let tools = server.tool_router.list_all();
+    let names = tools
+        .iter()
         .map(|tool| tool.name.to_string())
         .collect::<Vec<_>>();
 
@@ -68,6 +67,8 @@ fn tool_contract_exposes_v030_work_system_names() {
         "list_tasks_by_project",
         "get_project_status",
         "preview_note_change",
+        "preview_change_set",
+        "apply_change_set",
         "get_note_context",
         "audit_vault",
         "list_bases",
@@ -87,6 +88,29 @@ fn tool_contract_exposes_v030_work_system_names() {
     ] {
         assert!(!names.iter().any(|name| name == removed), "found {removed}");
     }
+
+    let preview = tools
+        .iter()
+        .find(|tool| tool.name == "preview_change_set")
+        .unwrap()
+        .annotations
+        .as_ref()
+        .unwrap();
+    assert_eq!(preview.read_only_hint, Some(true));
+    assert_eq!(preview.idempotent_hint, Some(true));
+    assert_eq!(preview.open_world_hint, Some(false));
+
+    let apply = tools
+        .iter()
+        .find(|tool| tool.name == "apply_change_set")
+        .unwrap()
+        .annotations
+        .as_ref()
+        .unwrap();
+    assert_eq!(apply.read_only_hint, Some(false));
+    assert_eq!(apply.destructive_hint, Some(true));
+    assert_eq!(apply.idempotent_hint, Some(false));
+    assert_eq!(apply.open_world_hint, Some(false));
 }
 
 #[test]
@@ -739,6 +763,184 @@ async fn composes_project_status_and_previews_note_changes() {
 }
 
 #[tokio::test]
+async fn previews_normalized_create_replace_and_append_change_set() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Err("missing"),
+        Ok("Projects/Rust.md"),
+        Ok("# Rust"),
+        Ok("Log.md"),
+        Ok("# Log"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+    let preview = server
+        .preview_change_set_data(vec![
+            ChangeSetOperation {
+                path: "./Ideas/New.md".to_string(),
+                mode: NoteChangeMode::Create,
+                content: "# New".to_string(),
+            },
+            ChangeSetOperation {
+                path: "Projects/Rust.md".to_string(),
+                mode: NoteChangeMode::Replace,
+                content: "# Rewritten".to_string(),
+            },
+            ChangeSetOperation {
+                path: "Log.md".to_string(),
+                mode: NoteChangeMode::Append,
+                content: "\nNext".to_string(),
+            },
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(preview.count, 3);
+    assert_eq!(preview.changes[0].path, "Ideas/New.md");
+    assert_eq!(preview.changes[0].proposed_content, "# New");
+    assert_eq!(preview.changes[1].proposed_content, "# Rewritten");
+    assert_eq!(preview.changes[2].proposed_content, "# Log\nNext");
+    assert!(preview.preview_token.starts_with("sha256:"));
+}
+
+#[tokio::test]
+async fn change_set_conflict_performs_no_writes() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Ok("Projects/Rust.md"),
+        Ok("# Old"),
+        Ok("Projects/Rust.md"),
+        Ok("# Changed"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    let changes = vec![ChangeSetOperation {
+        path: "Projects/Rust.md".to_string(),
+        mode: NoteChangeMode::Replace,
+        content: "# Proposed".to_string(),
+    }];
+    let preview = server
+        .preview_change_set_data(changes.clone())
+        .await
+        .unwrap();
+
+    let result = server
+        .apply_change_set_data(changes, &preview.preview_token)
+        .await
+        .unwrap();
+
+    assert_eq!(result.outcome, ChangeSetApplyOutcome::Conflict);
+    assert_ne!(result.expected_preview_token, result.observed_preview_token);
+    assert_eq!(result.skipped, vec![0]);
+    assert!(result.applied.is_empty());
+    assert_eq!(cli.calls().len(), 4);
+}
+
+#[tokio::test]
+async fn change_set_preflights_all_notes_and_reports_partial_failure() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Err("missing"),
+        Err("missing"),
+        Err("missing"),
+        Err("missing"),
+        Err("missing"),
+        Err("missing"),
+        Err("missing"),
+        Ok("created"),
+        Err("missing"),
+        Err("write failed"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    let changes = ["One.md", "Two.md", "Three.md"]
+        .into_iter()
+        .map(|path| ChangeSetOperation {
+            path: path.to_string(),
+            mode: NoteChangeMode::Create,
+            content: format!("# {path}"),
+        })
+        .collect::<Vec<_>>();
+    let preview = server
+        .preview_change_set_data(changes.clone())
+        .await
+        .unwrap();
+
+    let result = server
+        .apply_change_set_data(changes, &preview.preview_token)
+        .await
+        .unwrap();
+
+    assert_eq!(result.outcome, ChangeSetApplyOutcome::PartialFailure);
+    assert_eq!(result.applied[0].index, 0);
+    assert_eq!(result.failed.unwrap().index, 1);
+    assert_eq!(result.skipped, vec![2]);
+    let calls = cli.calls();
+    assert_eq!(calls[5].args, vec!["file", "path=Three.md"]);
+    assert_eq!(calls[6].args, vec!["file", "path=One.md"]);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.args != vec!["file", "path=Three.md"] || call == &calls[5])
+    );
+}
+
+#[tokio::test]
+async fn applies_approved_create_replace_and_append_change_set_in_order() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::new([
+        Err("missing"),
+        Ok("Replace.md"),
+        Ok("old"),
+        Ok("Append.md"),
+        Ok("base"),
+        Err("missing"),
+        Ok("Replace.md"),
+        Ok("old"),
+        Ok("Append.md"),
+        Ok("base"),
+        Err("missing"),
+        Ok("created"),
+        Ok("Replace.md"),
+        Ok("replaced"),
+        Ok("appended"),
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    let changes = vec![
+        ChangeSetOperation {
+            path: "Create.md".to_string(),
+            mode: NoteChangeMode::Create,
+            content: "new".to_string(),
+        },
+        ChangeSetOperation {
+            path: "Replace.md".to_string(),
+            mode: NoteChangeMode::Replace,
+            content: "replacement".to_string(),
+        },
+        ChangeSetOperation {
+            path: "Append.md".to_string(),
+            mode: NoteChangeMode::Append,
+            content: "+tail".to_string(),
+        },
+    ];
+    let preview = server
+        .preview_change_set_data(changes.clone())
+        .await
+        .unwrap();
+
+    let result = server
+        .apply_change_set_data(changes, &preview.preview_token)
+        .await
+        .unwrap();
+
+    assert_eq!(result.outcome, ChangeSetApplyOutcome::Applied);
+    assert_eq!(result.applied.len(), 3);
+    assert!(result.skipped.is_empty());
+    assert_eq!(
+        cli.calls()[14].args,
+        vec!["append", "path=Append.md", "content=+tail", "inline"]
+    );
+}
+
+#[tokio::test]
 async fn vault_info_uses_cli_metadata_and_total_count() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
@@ -1135,6 +1337,7 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
             "summarize_note",
             "search_and_synthesize",
             "draft_note_update",
+            "draft_change_set",
             "daily_review",
             "plan_day",
             "tag_overview",
@@ -1219,6 +1422,15 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
     assert_prompt_text_contains(&base, "query_base");
     assert_prompt_text_contains(&base, "Active projects");
     assert_prompt_text_contains(&base, "Do not call `create_base_item`");
+
+    let change_set = server
+        .get_prompt_result(prompt_request(
+            "draft_change_set",
+            [("intent", "Split one note into two focused notes")],
+        ))
+        .unwrap();
+    assert_prompt_text_contains(&change_set, "preview_change_set");
+    assert_prompt_text_contains(&change_set, "explicitly accepts that exact preview token");
 }
 
 #[test]
@@ -1234,6 +1446,11 @@ fn prompt_requests_validate_required_arguments() {
     assert_eq!(
         error.to_string(),
         "Prompt 'summarize_note' requires argument 'path'"
+    );
+    assert!(
+        server
+            .get_prompt_result(GetPromptRequestParams::new("draft_change_set"))
+            .is_err()
     );
 }
 
@@ -1273,6 +1490,7 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         Ok("Knowledge/Orphan.md\n"),
         Ok("Knowledge/Dead End.md\n"),
         Ok("Projects.base\n"),
+        Err("missing"),
         Ok("Projects/Rust.md\n"),
         Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
     ]);
@@ -1329,6 +1547,24 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
         .call_tool(CallToolRequestParams::new("list_bases"))
         .await
         .unwrap();
+    let preview_change_set_args = rmcp::serde_json::json!({
+        "changes": [{
+            "path": "Draft.md",
+            "mode": "create",
+            "content": "# Draft"
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let preview_change_set_result = client
+        .peer()
+        .call_tool(
+            CallToolRequestParams::new("preview_change_set")
+                .with_arguments(preview_change_set_args),
+        )
+        .await
+        .unwrap();
     let note_index = client
         .peer()
         .read_resource(ReadResourceRequestParams::new("obsidian://notes/index"))
@@ -1362,6 +1598,8 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     assert!(tools.iter().any(|tool| tool.name == "list_bases"));
     assert!(tools.iter().any(|tool| tool.name == "query_base"));
     assert!(tools.iter().any(|tool| tool.name == "create_base_item"));
+    assert!(tools.iter().any(|tool| tool.name == "preview_change_set"));
+    assert!(tools.iter().any(|tool| tool.name == "apply_change_set"));
     assert!(
         resources
             .iter()
@@ -1401,10 +1639,16 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     assert!(prompts.iter().any(|prompt| prompt.name == "plan_day"));
     assert!(prompts.iter().any(|prompt| prompt.name == "vault_audit"));
     assert!(prompts.iter().any(|prompt| prompt.name == "base_review"));
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.name == "draft_change_set")
+    );
     assert!(!task_result.is_error.unwrap_or(false));
     assert!(!overdue_result.is_error.unwrap_or(false));
     assert!(!audit_result.is_error.unwrap_or(false));
     assert!(!bases_result.is_error.unwrap_or(false));
+    assert!(!preview_change_set_result.is_error.unwrap_or(false));
     assert_resource_text_contains(&note_index, "Projects/Rust.md");
     assert_resource_text_contains(&overdue_resource, "2026-06-01");
     assert_prompt_text_contains(&weekly, "read_daily_notes");

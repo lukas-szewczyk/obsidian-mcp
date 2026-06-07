@@ -46,6 +46,15 @@ impl ObsidianMcp {
             )
             .with_title("Draft note update"),
             Prompt::new(
+                "draft_change_set",
+                Some("Draft and preview a safe multi-note change set."),
+                Some(vec![required_prompt_argument(
+                    "intent",
+                    "What the user wants to create, replace, or append across Markdown notes.",
+                )]),
+            )
+            .with_title("Draft note change set"),
+            Prompt::new(
                 "daily_review",
                 Some("Review today's daily note and prepare a grounded plan."),
                 None,
@@ -169,6 +178,16 @@ impl ObsidianMcp {
                     ),
                 )])
                 .with_description("Draft a safe note update."))
+            }
+            "draft_change_set" => {
+                let intent = required_prompt_string(&request, "intent")?;
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!(
+                        "Prepare a small, coherent set of Markdown note changes for this intent: {intent}\n\nRead the affected notes as needed, then call `preview_change_set` with all proposed create, replace, and append operations. Show the exact preview and its token. Do not call `apply_change_set` unless the user separately and explicitly accepts that exact preview token."
+                    ),
+                )])
+                .with_description("Draft and preview a safe multi-note change set."))
             }
             "daily_review" => Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 PromptMessageRole::User,

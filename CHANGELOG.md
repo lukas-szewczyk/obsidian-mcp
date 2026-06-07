@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - Stable read-only evaluation questions for the Work System fixture.
 - Read-only note context and vault graph audit tools, resources, and prompt.
 - Obsidian Bases listing, querying, explicit item creation, resources, and review prompt.
+- Stateless preview and guarded application of multi-note change sets.
 
 ### Changed
 
