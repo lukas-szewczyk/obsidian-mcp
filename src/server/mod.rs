@@ -12,16 +12,17 @@ mod tests;
 use std::{
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
     model::{
-        GetPromptRequestParams, GetPromptResult, Implementation, ListPromptsResult,
-        ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResult, ServerCapabilities, ServerInfo,
+        GetPromptRequestParams, GetPromptResult, Implementation, InitializeRequestParams,
+        InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
+        ServerInfo,
     },
     service::RequestContext,
     tool_handler,
@@ -29,7 +30,10 @@ use rmcp::{
 
 use crate::{
     AppResult, ObsidianMcpError,
-    cli::{ObsidianCliRunner, ObsidianCommand, RealObsidianCli, encode_cli_text, truncate_error},
+    cli::{
+        CliOutput, ObsidianCliRunner, ObsidianCommand, RealObsidianCli, encode_cli_text,
+        redact_sensitive_text, truncate_error,
+    },
     domain::{
         DailyDate, PropertyName, TaskLine, VaultRelativePath, has_base_extension,
         has_markdown_extension,
@@ -42,6 +46,8 @@ pub struct ObsidianMcp {
     vault: Arc<PathBuf>,
     vault_name: Option<String>,
     cli: Arc<dyn ObsidianCliRunner>,
+    validated_vault: Arc<OnceLock<VaultMetadata>>,
+    validate_on_initialize: bool,
     tool_router: ToolRouter<Self>,
 }
 
@@ -54,7 +60,12 @@ impl ObsidianMcp {
     }
 
     pub fn new(vault: impl Into<PathBuf>) -> AppResult<Self> {
-        Self::with_runner_and_vault_name(vault, vault_name_from_env(), RealObsidianCli::from_env())
+        Self::build(
+            vault,
+            vault_name_from_env(),
+            RealObsidianCli::from_env(),
+            true,
+        )
     }
 
     pub fn default_vault_path() -> PathBuf {
@@ -66,13 +77,38 @@ impl ObsidianMcp {
     where
         R: ObsidianCliRunner + 'static,
     {
-        Self::with_runner_and_vault_name(vault, None, cli)
+        Self::build(vault, None, cli, false)
     }
 
+    #[cfg(test)]
     fn with_runner_and_vault_name<R>(
         vault: impl Into<PathBuf>,
         vault_name: Option<String>,
         cli: R,
+    ) -> AppResult<Self>
+    where
+        R: ObsidianCliRunner + 'static,
+    {
+        Self::build(vault, vault_name, cli, false)
+    }
+
+    #[cfg(test)]
+    fn with_validating_runner<R>(
+        vault: impl Into<PathBuf>,
+        vault_name: Option<String>,
+        cli: R,
+    ) -> AppResult<Self>
+    where
+        R: ObsidianCliRunner + 'static,
+    {
+        Self::build(vault, vault_name, cli, true)
+    }
+
+    fn build<R>(
+        vault: impl Into<PathBuf>,
+        vault_name: Option<String>,
+        cli: R,
+        validate_on_initialize: bool,
     ) -> AppResult<Self>
     where
         R: ObsidianCliRunner + 'static,
@@ -96,6 +132,8 @@ impl ObsidianMcp {
             vault: Arc::new(vault),
             vault_name: normalize_vault_name(vault_name),
             cli: Arc::new(cli),
+            validated_vault: Arc::new(OnceLock::new()),
+            validate_on_initialize,
             tool_router: Self::tool_router(),
         })
     }
@@ -105,8 +143,7 @@ impl ObsidianMcp {
     }
 
     pub async fn vault_info_data(&self) -> AppResult<VaultInfoResponse> {
-        let vault_metadata =
-            parse_vault_metadata(&self.run_cli(ObsidianCommand::new("vault")).await?)?;
+        let vault_metadata = self.validate_vault_identity().await?;
         let markdown_notes = parse_count(
             &self
                 .run_cli(
@@ -119,9 +156,55 @@ impl ObsidianMcp {
 
         Ok(VaultInfoResponse {
             configured_vault_path: self.vault_path().display().to_string(),
-            obsidian_vault_path: vault_metadata.path,
-            obsidian_vault_name: vault_metadata.name,
+            obsidian_vault_path: vault_metadata.path.clone(),
+            obsidian_vault_name: vault_metadata.name.clone(),
             markdown_notes,
+        })
+    }
+
+    pub async fn validate_vault(&self) -> AppResult<()> {
+        self.validate_vault_identity().await.map(|_| ())
+    }
+
+    async fn validate_vault_identity(&self) -> AppResult<&VaultMetadata> {
+        if let Some(metadata) = self.validated_vault.get() {
+            return Ok(metadata);
+        }
+
+        let reported = parse_vault_metadata(&self.run_cli(ObsidianCommand::new("vault")).await?)?;
+        let reported_path = PathBuf::from(&reported.path)
+            .canonicalize()
+            .map_err(|error| {
+                ObsidianMcpError::CliProtocol(format!(
+                    "Cannot access Obsidian-reported vault path '{}': {error}",
+                    reported.path
+                ))
+            })?;
+        if reported_path != *self.vault {
+            return Err(ObsidianMcpError::VaultMismatch(format!(
+                "Configured vault path '{}' does not match Obsidian CLI vault path '{}'",
+                self.vault.display(),
+                reported_path.display()
+            )));
+        }
+        if let Some(expected_name) = self.vault_name.as_deref()
+            && reported.name != expected_name
+        {
+            return Err(ObsidianMcpError::VaultMismatch(format!(
+                "Configured vault name '{expected_name}' does not match Obsidian CLI vault name '{}'",
+                reported.name
+            )));
+        }
+
+        let metadata = VaultMetadata {
+            name: reported.name,
+            path: reported_path.display().to_string(),
+        };
+        let _ = self.validated_vault.set(metadata);
+        self.validated_vault.get().ok_or_else(|| {
+            ObsidianMcpError::CliInfrastructure(
+                "Validated vault identity was not cached".to_string(),
+            )
         })
     }
 
@@ -130,6 +213,12 @@ impl ObsidianMcp {
         directory: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<Vec<String>> {
+        let mut notes = self.discover_note_paths(directory).await?;
+        notes.truncate(clamp_limit(limit, 200, 2_000));
+        Ok(notes)
+    }
+
+    async fn discover_note_paths(&self, directory: Option<&str>) -> AppResult<Vec<String>> {
         let directory = safe_directory(directory)?;
         let mut command = ObsidianCommand::new("files").parameter("ext", "md");
         if let Some(directory) = &directory {
@@ -139,7 +228,7 @@ impl ObsidianMcp {
         let mut notes = parse_output_lines(&self.run_cli(command).await?);
         notes.retain(|note| has_markdown_extension(note));
         notes.sort();
-        notes.truncate(clamp_limit(limit, 200, 2_000));
+        notes.dedup();
         Ok(notes)
     }
 
@@ -150,7 +239,7 @@ impl ObsidianMcp {
 
     pub async fn create_note_content(&self, path: &str, content: &str) -> AppResult<String> {
         let path = VaultRelativePath::markdown(path)?;
-        if self.note_exists_at(&path).await {
+        if self.note_exists_at(&path).await? {
             return Err(ObsidianMcpError::InvalidInput(
                 "Note already exists; use replace_note to replace it".to_string(),
             ));
@@ -167,7 +256,7 @@ impl ObsidianMcp {
 
     pub async fn replace_note_content(&self, path: &str, content: &str) -> AppResult<String> {
         let path = VaultRelativePath::markdown(path)?;
-        if !self.note_exists_at(&path).await {
+        if !self.note_exists_at(&path).await? {
             return Err(ObsidianMcpError::InvalidInput(
                 "Note does not exist; use create_note to create it".to_string(),
             ));
@@ -185,6 +274,7 @@ impl ObsidianMcp {
 
     pub async fn append_note_content(&self, path: &str, content: &str) -> AppResult<String> {
         let path = VaultRelativePath::markdown(path)?;
+        self.require_note_exists(&path).await?;
         self.run_cli(
             ObsidianCommand::new("append")
                 .parameter("path", path.as_cli_arg())
@@ -284,6 +374,7 @@ impl ObsidianMcp {
             ));
         }
 
+        self.preflight_daily_note().await?;
         let mut command =
             ObsidianCommand::new("daily:append").parameter("content", encode_cli_text(content));
         if inline {
@@ -322,12 +413,13 @@ impl ObsidianMcp {
                     content: Some(content),
                     error: None,
                 },
-                Err(error) => DailyNoteEntry {
+                Err(ObsidianMcpError::NoteNotFound(error)) => DailyNoteEntry {
                     date: date_text,
                     path: path_text,
                     content: None,
-                    error: Some(error.to_string()),
+                    error: Some(error),
                 },
+                Err(error) => return Err(error),
             };
             entries.push(entry);
             current = current.next();
@@ -368,6 +460,7 @@ impl ObsidianMcp {
         let task = format_task_line(text)?;
         match target {
             TaskWriteTarget::Daily => {
+                self.preflight_daily_note().await?;
                 self.run_cli(
                     ObsidianCommand::new("daily:append")
                         .parameter("content", encode_cli_text(&task)),
@@ -377,6 +470,7 @@ impl ObsidianMcp {
             }
             TaskWriteTarget::Note { path } => {
                 let path = VaultRelativePath::markdown(path)?;
+                self.require_note_exists(&path).await?;
                 self.run_cli(
                     ObsidianCommand::new("append")
                         .parameter("path", path.as_cli_arg())
@@ -396,6 +490,13 @@ impl ObsidianMcp {
     ) -> AppResult<String> {
         let path = VaultRelativePath::markdown(path)?;
         let line = TaskLine::parse(line)?;
+        self.require_note_exists(&path).await?;
+        self.run_cli(
+            ObsidianCommand::new("task")
+                .parameter("path", path.as_cli_arg())
+                .parameter("line", line.as_usize().to_string()),
+        )
+        .await?;
         let command = ObsidianCommand::new("task")
             .parameter("path", path.as_cli_arg())
             .parameter("line", line.as_usize().to_string());
@@ -429,33 +530,73 @@ impl ObsidianMcp {
             .await
     }
 
-    async fn note_exists_at(&self, path: &VaultRelativePath) -> bool {
-        self.run_cli(ObsidianCommand::new("file").parameter("path", path.as_cli_arg()))
+    async fn note_exists_at(&self, path: &VaultRelativePath) -> AppResult<bool> {
+        match self
+            .run_cli(ObsidianCommand::new("file").parameter("path", path.as_cli_arg()))
             .await
-            .is_ok()
+        {
+            Ok(_) => Ok(true),
+            Err(ObsidianMcpError::NoteNotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn require_note_exists(&self, path: &VaultRelativePath) -> AppResult<()> {
+        if self.note_exists_at(path).await? {
+            Ok(())
+        } else {
+            Err(ObsidianMcpError::NoteNotFound(format!(
+                "Note not found: {}",
+                path.as_cli_arg()
+            )))
+        }
+    }
+
+    async fn preflight_daily_note(&self) -> AppResult<()> {
+        self.run_cli(ObsidianCommand::new("daily:path"))
+            .await
+            .map(|_| ())
     }
 
     async fn run_cli(&self, command: ObsidianCommand) -> AppResult<String> {
-        self.cli
+        let command_name = command.command_name().to_string();
+        let output = self
+            .cli
             .run(
                 self.vault_path(),
                 command.into_args(self.vault_name.as_deref()),
             )
-            .await
+            .await?;
+        classify_cli_output(&command_name, output)
     }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ObsidianMcp {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        if self.validate_on_initialize {
+            self.validate_vault_identity()
+                .await
+                .map_err(internal_mcp_error)?;
+        }
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(self.get_info())
+    }
+
     async fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        self.list_resource_descriptors()
+        self.list_resource_page(request.and_then(|request| request.cursor).as_deref())
             .await
-            .map(ListResourcesResult::with_all_items)
-            .map_err(internal_mcp_error)
+            .map_err(tool_mcp_error)
     }
 
     async fn list_resource_templates(
@@ -508,7 +649,7 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. For multi-note changes, use preview_change_set and call apply_change_set only after the user explicitly accepts its preview token. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled. Paths must be relative to the configured vault.")
+            .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Multi-note change sets use best-effort optimistic concurrency: use preview_change_set, obtain explicit acceptance of its token, then call apply_change_set; application is sequential and non-atomic. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled, and the configured vault must already be registered in Obsidian. Paths must be relative to the configured vault.")
     }
 }
 
@@ -678,10 +819,24 @@ fn internal_mcp_error(error: ObsidianMcpError) -> McpError {
     McpError::internal_error(error.to_string(), None)
 }
 
+fn tool_mcp_error(error: ObsidianMcpError) -> McpError {
+    match error {
+        ObsidianMcpError::InvalidInput(message) | ObsidianMcpError::InvalidPath(message) => {
+            McpError::invalid_params(message, None)
+        }
+        ObsidianMcpError::NoteNotFound(message) | ObsidianMcpError::ResourceNotFound(message) => {
+            McpError::resource_not_found(message, None)
+        }
+        error => McpError::internal_error(error.to_string(), None),
+    }
+}
+
 fn resource_mcp_error(error: ObsidianMcpError) -> McpError {
     match error {
-        ObsidianMcpError::InvalidInput(message) => McpError::invalid_params(message, None),
-        ObsidianMcpError::InvalidPath(message) | ObsidianMcpError::ResourceNotFound(message) => {
+        ObsidianMcpError::InvalidInput(message) | ObsidianMcpError::InvalidPath(message) => {
+            McpError::invalid_params(message, None)
+        }
+        ObsidianMcpError::NoteNotFound(message) | ObsidianMcpError::ResourceNotFound(message) => {
             McpError::resource_not_found(message, None)
         }
         error => McpError::internal_error(error.to_string(), None),
@@ -705,6 +860,76 @@ fn parse_output_lines(output: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn classify_cli_output(command: &str, output: CliOutput) -> AppResult<String> {
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(ObsidianMcpError::CliProtocol(format!(
+            "Obsidian CLI output exceeded the 8 MiB capture limit for command '{command}'"
+        )));
+    }
+
+    for line in output
+        .stdout
+        .lines()
+        .chain(output.stderr.lines())
+        .map(str::trim)
+    {
+        if line.starts_with("Error: File ") && line.ends_with(" not found.") {
+            return Err(ObsidianMcpError::NoteNotFound(line.to_string()));
+        }
+        if line.starts_with("Error:") {
+            return Err(ObsidianMcpError::CliFailed(format!(
+                "Obsidian CLI command '{command}' reported an error: {}",
+                truncate_error(&redact_sensitive_text(line))
+            )));
+        }
+    }
+
+    if !output.success {
+        let details = first_non_empty([output.stderr.as_str(), output.stdout.as_str()])
+            .map(|details| truncate_error(&redact_sensitive_text(details)))
+            .unwrap_or_else(|| match output.exit_code {
+                Some(code) => format!("exit status {code}"),
+                None => "terminated without an exit status".to_string(),
+            });
+        return Err(ObsidianMcpError::CliFailed(format!(
+            "Obsidian CLI command '{command}' failed: {details}"
+        )));
+    }
+
+    let trimmed = output.stdout.trim();
+    if is_empty_result(command, trimmed) {
+        Ok(String::new())
+    } else {
+        Ok(output.stdout)
+    }
+}
+
+fn is_empty_result(command: &str, output: &str) -> bool {
+    matches!(
+        (command, output),
+        ("search" | "search:context", "No matches found.")
+            | ("tags", "No tags found.")
+            | ("backlinks", "No backlinks found.")
+            | ("tasks", "No tasks found.")
+            | ("bases", "No base files found in vault")
+            | ("properties", "No frontmatter found.")
+            | ("aliases", "No aliases found.")
+            | ("outline", "No headings found.")
+            | ("links", "No links found.")
+            | ("unresolved", "No unresolved links found.")
+            | ("orphans", "No orphan files found.")
+            | ("deadends", "No dead-end files found.")
+            | ("files", "No files found.")
+    )
+}
+
+fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    values
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
 }
 
 fn parse_count(output: &str) -> AppResult<usize> {

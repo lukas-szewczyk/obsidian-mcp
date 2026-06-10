@@ -2,7 +2,10 @@ use std::{
     collections::VecDeque,
     ffi::OsString,
     fs,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use rmcp::{
@@ -33,6 +36,211 @@ async fn rejects_paths_that_escape_vault() {
 }
 
 #[test]
+fn classifies_cli_sentinels_errors_and_truncation() {
+    assert_eq!(
+        classify_cli_output("tags", CliOutput::success("No tags found.\n")).unwrap(),
+        ""
+    );
+    assert_eq!(
+        classify_cli_output("tasks", CliOutput::success("No tasks found.\n")).unwrap(),
+        ""
+    );
+    assert!(matches!(
+        classify_cli_output(
+            "read",
+            CliOutput::success("Error: File \"Missing.md\" not found.\n")
+        ),
+        Err(ObsidianMcpError::NoteNotFound(_))
+    ));
+
+    let mut stderr_error = CliOutput::success("");
+    stderr_error.stderr = "Error: unexpected content=secret body\n".to_string();
+    let error = classify_cli_output("read", stderr_error).unwrap_err();
+    assert!(matches!(error, ObsidianMcpError::CliFailed(_)));
+    assert!(!error.to_string().contains("secret"));
+
+    let mut truncated = CliOutput::success("partial");
+    truncated.stdout_truncated = true;
+    assert!(matches!(
+        classify_cli_output("read", truncated),
+        Err(ObsidianMcpError::CliProtocol(_))
+    ));
+}
+
+#[tokio::test]
+async fn ambiguous_preflights_block_every_write_entry_point() {
+    let vault = TestVault::new();
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(server.create_note_content("Create.md", "x").await.is_err());
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .replace_note_content("Replace.md", "x")
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(server.append_note_content("Append.md", "x").await.is_err());
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .set_property_data("Note.md", "status", "done", None, false)
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .create_task_data(
+                &TaskWriteTarget::Note {
+                    path: "Note.md".to_string()
+                },
+                "Task"
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .set_task_status_data("Note.md", 1, &TaskStatus::Done)
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(server.append_daily_note_content("x", false).await.is_err());
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .create_task_data(&TaskWriteTarget::Daily, "Task")
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .create_base_item_data("Projects.base", "Active", "New", None)
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+    assert!(
+        server
+            .apply_change_set_data(
+                vec![ChangeSetOperation {
+                    path: "New.md".to_string(),
+                    mode: NoteChangeMode::Create,
+                    content: "x".to_string(),
+                }],
+                &format!("sha256:{}", "a".repeat(64)),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(cli.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn daily_range_propagates_infrastructure_failures() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::results(vec![Err(timeout_error())]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+
+    assert!(
+        server
+            .read_daily_notes_data("2026-06-01", "2026-06-02", None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn validates_and_caches_vault_identity_and_rejects_mismatches() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::outputs([format!(
+        "name\ttest-vault\npath\t{}\n",
+        vault.path().display()
+    )]);
+    let server = ObsidianMcp::with_validating_runner(
+        vault.path(),
+        Some("test-vault".to_string()),
+        cli.clone(),
+    )
+    .unwrap();
+    server.validate_vault().await.unwrap();
+    server.validate_vault().await.unwrap();
+    assert_eq!(cli.calls().len(), 1);
+
+    let other = TestVault::new();
+    let cli =
+        FakeObsidianCli::outputs([format!("name\tother\npath\t{}\n", other.path().display())]);
+    let server = ObsidianMcp::with_validating_runner(vault.path(), None, cli).unwrap();
+    assert!(matches!(
+        server.validate_vault().await,
+        Err(ObsidianMcpError::VaultMismatch(_))
+    ));
+
+    let cli = FakeObsidianCli::outputs([format!(
+        "name\twrong-name\npath\t{}\n",
+        vault.path().display()
+    )]);
+    let server =
+        ObsidianMcp::with_validating_runner(vault.path(), Some("test-vault".to_string()), cli)
+            .unwrap();
+    assert!(matches!(
+        server.validate_vault().await,
+        Err(ObsidianMcpError::VaultMismatch(_))
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn accepts_symlink_equivalent_vault_paths() {
+    use std::os::unix::fs::symlink;
+
+    let vault = TestVault::new();
+    let link = vault.path().with_extension("link");
+    symlink(vault.path(), &link).unwrap();
+    let cli = FakeObsidianCli::outputs([format!(
+        "name\ttest-vault\npath\t{}\n",
+        vault.path().display()
+    )]);
+    let server = ObsidianMcp::with_validating_runner(link.clone(), None, cli).unwrap();
+
+    server.validate_vault().await.unwrap();
+    fs::remove_file(link).unwrap();
+}
+
+#[test]
 fn task_status_and_content_validate_workflow_inputs() {
     assert_eq!(
         validate_task_status("xx").unwrap_err().to_string(),
@@ -54,6 +262,12 @@ fn tool_contract_exposes_v030_work_system_names() {
         .iter()
         .map(|tool| tool.name.to_string())
         .collect::<Vec<_>>();
+    assert_eq!(tools.len(), 29);
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.output_schema.is_some() && tool.annotations.is_some())
+    );
 
     for expected in [
         "create_note",
@@ -111,6 +325,65 @@ fn tool_contract_exposes_v030_work_system_names() {
     assert_eq!(apply.destructive_hint, Some(true));
     assert_eq!(apply.idempotent_hint, Some(false));
     assert_eq!(apply.open_world_hint, Some(false));
+
+    for destructive in ["set_task_status", "set_property"] {
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool.name == destructive)
+                .unwrap()
+                .annotations
+                .as_ref()
+                .unwrap()
+                .destructive_hint,
+            Some(true)
+        );
+    }
+
+    let task_schema = tools
+        .iter()
+        .find(|tool| tool.name == "set_task_status")
+        .unwrap()
+        .input_schema
+        .clone();
+    assert_eq!(
+        task_schema["properties"]["line"]["minimum"],
+        rmcp::serde_json::json!(1)
+    );
+    let change_set_schema = tools
+        .iter()
+        .find(|tool| tool.name == "preview_change_set")
+        .unwrap()
+        .input_schema
+        .clone();
+    assert_eq!(
+        change_set_schema["properties"]["changes"]["maxItems"],
+        rmcp::serde_json::json!(50)
+    );
+}
+
+#[test]
+fn tool_output_schema_properties_are_object_schemas() {
+    // MCP clients reject a top-level `outputSchema.properties.*` entry whose
+    // schema is a boolean (e.g. `serde_json::Value` deriving `true`). Every
+    // property must be an object-form JSON Schema.
+    let vault = TestVault::new();
+    let server = ObsidianMcp::with_runner(vault.path(), FakeObsidianCli::default()).unwrap();
+    for tool in server.tool_router.list_all() {
+        let Some(schema) = tool.output_schema.as_ref() else {
+            continue;
+        };
+        let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
+            continue;
+        };
+        for (name, prop) in properties {
+            assert!(
+                prop.is_object(),
+                "tool `{}` output property `{name}` must be an object schema, got: {prop}",
+                tool.name
+            );
+        }
+    }
 }
 
 #[test]
@@ -145,6 +418,7 @@ async fn uses_cli_for_notes_workflow() {
     let cli = FakeObsidianCli::new([
         Err("missing"),
         Ok("created"),
+        Ok("Projects/Rust.md"),
         Ok("appended"),
         Ok("Rust MCP\nSecond line\nObsidian vault"),
         Ok("Projects/Rust.md\n"),
@@ -191,6 +465,7 @@ async fn uses_cli_for_notes_workflow() {
                 "path=Projects/Rust.md",
                 "content=Rust MCP\\nSecond line",
             ],
+            vec!["file", "path=Projects/Rust.md"],
             vec![
                 "append",
                 "path=Projects/Rust.md",
@@ -301,6 +576,7 @@ async fn uses_cli_for_tags_backlinks_and_daily_notes() {
         Ok("#rust\t3\n#mcp\t2\n"),
         Ok("Ideas/MCP.md\t2\n"),
         Ok("# Daily\n"),
+        Ok("2026-06-09.md"),
         Ok("appended"),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
@@ -331,6 +607,7 @@ async fn uses_cli_for_tags_backlinks_and_daily_notes() {
             vec!["tags", "path=Projects/Rust.md", "counts", "sort=count"],
             vec!["backlinks", "path=Projects/Rust.md", "counts"],
             vec!["daily:read"],
+            vec!["daily:path"],
             vec!["daily:append", "content=- [ ] Follow up\\n", "inline"],
         ]
     );
@@ -416,6 +693,7 @@ async fn uses_cli_for_bases_workflow() {
         Ok(
             r#"[{"file.path":"Projects/Rust.md","status":"active"},{"file.path":"Projects/Home.md","status":"active"}]"#,
         ),
+        Ok("[]"),
         Ok("Created Projects/New Project.md\n"),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
@@ -446,6 +724,12 @@ async fn uses_cli_for_bases_workflow() {
             .collect::<Vec<_>>(),
         vec![
             vec!["bases"],
+            vec![
+                "base:query",
+                "path=Projects.base",
+                "format=json",
+                "view=Active projects",
+            ],
             vec![
                 "base:query",
                 "path=Projects.base",
@@ -496,8 +780,12 @@ async fn uses_cli_for_work_system_tasks_daily_range_and_projects() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
         Ok(" \t- [ ] Review inbox\tTodo.md\t4\n"),
+        Ok("Todo.md"),
         Ok("appended"),
+        Ok("2026-06-09.md"),
         Ok("daily appended"),
+        Ok("Todo.md"),
+        Ok(" \t- [ ] Review inbox\tTodo.md\t4\n"),
         Ok("updated"),
         Ok("# Monday\n"),
         Err("missing"),
@@ -547,7 +835,7 @@ async fn uses_cli_for_work_system_tasks_daily_range_and_projects() {
         daily_notes[1]
             .error
             .as_deref()
-            .is_some_and(|error| error == "missing")
+            .is_some_and(|error| error == "Error: File not found.")
     );
     assert_eq!(project_directory, "Projects");
     assert_eq!(projects, vec!["Projects/Home.md", "Projects/Rust.md"]);
@@ -558,8 +846,12 @@ async fn uses_cli_for_work_system_tasks_daily_range_and_projects() {
             .collect::<Vec<_>>(),
         vec![
             vec!["tasks", "format=tsv", "todo"],
+            vec!["file", "path=Todo.md"],
             vec!["append", "path=Todo.md", "content=- [ ] Review inbox"],
+            vec!["daily:path"],
             vec!["daily:append", "content=- [ ] Daily follow up"],
+            vec!["file", "path=Todo.md"],
+            vec!["task", "path=Todo.md", "line=4"],
             vec!["task", "path=Todo.md", "line=4", "done"],
             vec!["read", "path=2026-06-01.md"],
             vec!["read", "path=2026-06-02.md"],
@@ -901,6 +1193,7 @@ async fn applies_approved_create_replace_and_append_change_set_in_order() {
         Ok("created"),
         Ok("Replace.md"),
         Ok("replaced"),
+        Ok("Append.md"),
         Ok("appended"),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
@@ -935,7 +1228,7 @@ async fn applies_approved_create_replace_and_append_change_set_in_order() {
     assert_eq!(result.applied.len(), 3);
     assert!(result.skipped.is_empty());
     assert_eq!(
-        cli.calls()[14].args,
+        cli.calls()[15].args,
         vec!["append", "path=Append.md", "content=+tail", "inline"]
     );
 }
@@ -943,9 +1236,12 @@ async fn applies_approved_create_replace_and_append_change_set_in_order() {
 #[tokio::test]
 async fn vault_info_uses_cli_metadata_and_total_count() {
     let vault = TestVault::new();
-    let cli = FakeObsidianCli::new([
-        Ok("name\tKnowledge\npath\t/Users/example/Vault\nfiles\t57\nfolders\t8\nsize\t1234\n"),
-        Ok("Markdown files: 42\n"),
+    let cli = FakeObsidianCli::outputs([
+        format!(
+            "name\tKnowledge\npath\t{}\nfiles\t57\nfolders\t8\nsize\t1234\n",
+            vault.path().display()
+        ),
+        "Markdown files: 42\n".to_string(),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
 
@@ -955,7 +1251,7 @@ async fn vault_info_uses_cli_metadata_and_total_count() {
         info,
         VaultInfoResponse {
             configured_vault_path: vault.path().display().to_string(),
-            obsidian_vault_path: "/Users/example/Vault".to_string(),
+            obsidian_vault_path: vault.path().display().to_string(),
             obsidian_vault_name: "Knowledge".to_string(),
             markdown_notes: 42,
         }
@@ -1032,6 +1328,70 @@ async fn resource_descriptors_include_static_resources_and_notes() {
     assert!(!uris.iter().any(|uri| uri.contains("image.png")));
 }
 
+#[tokio::test]
+async fn resource_list_paginates_complete_catalog_and_rejects_bad_cursors() {
+    let vault = TestVault::new();
+    let notes = (0..201)
+        .map(|index| format!("Generated/{index:03}.md"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cli = FakeObsidianCli::outputs([
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes.clone(),
+        notes,
+    ]);
+    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+    let mut cursor = None;
+    let mut uris = Vec::new();
+    loop {
+        let page = server.list_resource_page(cursor.as_deref()).await.unwrap();
+        uris.extend(
+            page.resources
+                .into_iter()
+                .map(|resource| resource.uri.clone()),
+        );
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    assert_eq!(uris.len(), 611);
+    let unique = uris.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), uris.len());
+
+    assert!(server.list_resource_page(Some("bad")).await.is_err());
+    assert!(
+        server
+            .list_resource_page(Some(&format!("v1:100:{}", "0".repeat(64))))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn tool_errors_use_mcp_error_codes_without_extra_cli_calls() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::default();
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    let invalid = tool_mcp_error(ObsidianMcpError::InvalidPath("bad path".to_string()));
+    assert_eq!(invalid.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert!(server.read_note_content("../secret.md").await.is_err());
+    assert!(cli.calls().is_empty());
+
+    let missing = tool_mcp_error(ObsidianMcpError::NoteNotFound("missing".to_string()));
+    assert_eq!(missing.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+    let failed = tool_mcp_error(ObsidianMcpError::CliFailed("failed".to_string()));
+    assert_eq!(failed.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+}
+
 #[test]
 fn resource_templates_expose_note_uri_template() {
     let vault = TestVault::new();
@@ -1083,10 +1443,13 @@ async fn read_note_resource_decodes_uri_and_reads_note() {
 #[tokio::test]
 async fn read_static_resources_returns_vault_info_and_index() {
     let vault = TestVault::new();
-    let cli = FakeObsidianCli::new([
-        Ok("name\tKnowledge\npath\t/Users/example/Vault\nfiles\t57\n"),
-        Ok("42\n"),
-        Ok("Projects/Rust.md\nSpace Note.md\n"),
+    let cli = FakeObsidianCli::outputs([
+        format!(
+            "name\tKnowledge\npath\t{}\nfiles\t57\n",
+            vault.path().display()
+        ),
+        "42\n".to_string(),
+        "Projects/Rust.md\nSpace Note.md\n".to_string(),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
 
@@ -1670,19 +2033,20 @@ impl ClientHandler for TestClient {
 #[tokio::test]
 #[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
 async fn real_cli_smoke_vault_info() {
-    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
-    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+    let server = guarded_real_cli_server();
 
+    server.validate_vault().await.unwrap();
     server.vault_info_data().await.unwrap();
 }
 
 #[tokio::test]
 #[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
 async fn real_cli_smoke_work_system_reads() {
-    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
-    let note_path = env::var("OBSIDIAN_SMOKE_NOTE_PATH").unwrap_or_else(|_| "Todo.md".to_string());
-    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+    let note_path = env::var("OBSIDIAN_SMOKE_NOTE_PATH")
+        .unwrap_or_else(|_| "RemediationFixtures/Existing.md".to_string());
+    let server = guarded_real_cli_server();
 
+    server.validate_vault().await.unwrap();
     server.list_properties_data(&note_path).await.unwrap();
     server
         .list_overdue_tasks_data("2026-06-05", &TaskReadTarget::Vault, Some(10))
@@ -1693,10 +2057,11 @@ async fn real_cli_smoke_work_system_reads() {
 #[tokio::test]
 #[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
 async fn real_cli_smoke_knowledge_graph_reads() {
-    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
-    let note_path = env::var("OBSIDIAN_SMOKE_NOTE_PATH").unwrap_or_else(|_| "Todo.md".to_string());
-    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+    let note_path = env::var("OBSIDIAN_SMOKE_NOTE_PATH")
+        .unwrap_or_else(|_| "RemediationFixtures/Existing.md".to_string());
+    let server = guarded_real_cli_server();
 
+    server.validate_vault().await.unwrap();
     server
         .get_note_context_data(&note_path, Some(10))
         .await
@@ -1707,13 +2072,110 @@ async fn real_cli_smoke_knowledge_graph_reads() {
 #[tokio::test]
 #[ignore = "requires Obsidian to be running with CLI enabled and OBSIDIAN_VAULT_PATH set"]
 async fn real_cli_smoke_bases_reads() {
-    let vault = env::var_os("OBSIDIAN_VAULT_PATH").expect("OBSIDIAN_VAULT_PATH must be set");
-    let server = ObsidianMcp::new(PathBuf::from(vault)).unwrap();
+    let server = guarded_real_cli_server();
 
+    server.validate_vault().await.unwrap();
     let bases = server.list_bases_data(Some(10)).await.unwrap();
     if let Some(path) = bases.first() {
         server.query_base_data(path, None, Some(10)).await.unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "requires guarded fixtures in /Users/lukasz/Desktop/test-vault"]
+async fn real_cli_remediation_reads_writes_and_pagination() {
+    let server = guarded_real_cli_server();
+    server.validate_vault().await.unwrap();
+
+    assert!(matches!(
+        server
+            .read_note_content("RemediationFixtures/Missing.md")
+            .await,
+        Err(ObsidianMcpError::NoteNotFound(_))
+    ));
+    assert!(
+        server
+            .search_note_contents("__no_remediation_match__", None, Some(10))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let live_path = "RemediationFixtures/Live.md";
+    let live_file = server.vault_path().join(live_path);
+    let _ = fs::remove_file(&live_file);
+    server
+        .create_note_content(live_path, "# Live")
+        .await
+        .unwrap();
+    server
+        .replace_note_content(live_path, "# Live Replaced")
+        .await
+        .unwrap();
+    server
+        .append_note_content(live_path, "\nTail")
+        .await
+        .unwrap();
+    server
+        .set_property_data(
+            live_path,
+            "status",
+            "active",
+            Some(&PropertyType::Text),
+            false,
+        )
+        .await
+        .unwrap();
+    server
+        .create_task_data(
+            &TaskWriteTarget::Note {
+                path: live_path.to_string(),
+            },
+            "Live task",
+        )
+        .await
+        .unwrap();
+
+    let mut cursor = None;
+    let mut resource_count = 0;
+    loop {
+        let page = server.list_resource_page(cursor.as_deref()).await.unwrap();
+        resource_count += page.resources.len();
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(resource_count > 611);
+    let large_read = server
+        .read_note_content("RemediationFixtures/Large.md")
+        .await;
+    assert!(
+        large_read.is_ok() || matches!(large_read, Err(ObsidianMcpError::CliProtocol(_))),
+        "large output must complete or fail with the configured capture limit"
+    );
+    fs::remove_file(live_file).unwrap();
+}
+
+fn guarded_real_cli_server() -> ObsidianMcp {
+    let expected = PathBuf::from("/Users/lukasz/Desktop/test-vault")
+        .canonicalize()
+        .unwrap();
+    let configured = env::var_os("OBSIDIAN_VAULT_PATH")
+        .map(PathBuf::from)
+        .expect("OBSIDIAN_VAULT_PATH must be set")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(
+        configured, expected,
+        "live tests may only target /Users/lukasz/Desktop/test-vault"
+    );
+    assert_eq!(
+        env::var("OBSIDIAN_VAULT_NAME").as_deref(),
+        Ok("test-vault"),
+        "live tests require OBSIDIAN_VAULT_NAME=test-vault"
+    );
+    ObsidianMcp::new(configured).unwrap()
 }
 
 fn prompt_request<const N: usize>(
@@ -1757,7 +2219,7 @@ fn assert_prompt_text_contains(result: &GetPromptResult, expected: &str) {
 #[derive(Debug, Clone, Default)]
 struct FakeObsidianCli {
     calls: Arc<Mutex<Vec<FakeCall>>>,
-    responses: Arc<Mutex<VecDeque<AppResult<String>>>>,
+    responses: Arc<Mutex<VecDeque<AppResult<CliOutput>>>>,
 }
 
 impl FakeObsidianCli {
@@ -1767,8 +2229,13 @@ impl FakeObsidianCli {
             responses: Arc::new(Mutex::new(
                 responses
                     .into_iter()
-                    .map(|result| result.map(str::to_string).map_err(str::to_string))
-                    .map(|result| result.map_err(ObsidianMcpError::CliFailed))
+                    .map(|result| match result {
+                        Ok(output) => Ok(CliOutput::success(output)),
+                        Err("missing") => Err(ObsidianMcpError::NoteNotFound(
+                            "Error: File not found.".to_string(),
+                        )),
+                        Err(error) => Err(ObsidianMcpError::CliFailed(error.to_string())),
+                    })
                     .collect(),
             )),
         }
@@ -1777,6 +2244,30 @@ impl FakeObsidianCli {
     fn calls(&self) -> Vec<FakeCall> {
         self.calls.lock().unwrap().clone()
     }
+
+    fn outputs<const N: usize>(responses: [String; N]) -> Self {
+        Self {
+            calls: Arc::default(),
+            responses: Arc::new(Mutex::new(
+                responses
+                    .into_iter()
+                    .map(CliOutput::success)
+                    .map(Ok)
+                    .collect(),
+            )),
+        }
+    }
+
+    fn results(responses: Vec<AppResult<CliOutput>>) -> Self {
+        Self {
+            calls: Arc::default(),
+            responses: Arc::new(Mutex::new(responses.into())),
+        }
+    }
+}
+
+fn timeout_error() -> ObsidianMcpError {
+    ObsidianMcpError::CliTimeout("timed out".to_string())
 }
 
 impl ObsidianCliRunner for FakeObsidianCli {
@@ -1815,10 +2306,12 @@ struct TestVault {
 
 impl TestVault {
     fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let mut path = env::temp_dir();
         path.push(format!(
-            "obsidian_mcp_test_{}_{}",
+            "obsidian_mcp_test_{}_{}_{}",
             std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

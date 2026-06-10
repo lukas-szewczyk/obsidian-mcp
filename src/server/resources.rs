@@ -1,7 +1,8 @@
 use rmcp::model::{
-    AnnotateAble, RawResource, RawResourceTemplate, ReadResourceResult, Resource, ResourceContents,
-    ResourceTemplate,
+    AnnotateAble, ListResourcesResult, RawResource, RawResourceTemplate, ReadResourceResult,
+    Resource, ResourceContents, ResourceTemplate,
 };
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -156,13 +157,28 @@ impl ObsidianMcp {
             tasks_open_resource(),
             projects_index_resource(),
         ];
-        for note in self.list_note_paths(None, Some(200)).await? {
+        for note in self.discover_note_paths(None).await? {
             let path = VaultRelativePath::markdown(&note)?;
             resources.push(note_resource(&path));
             resources.push(backlinks_resource(&path));
             resources.push(context_resource(&path));
         }
         Ok(resources)
+    }
+
+    pub async fn list_resource_page(&self, cursor: Option<&str>) -> AppResult<ListResourcesResult> {
+        const PAGE_SIZE: usize = 100;
+        let resources = self.list_resource_descriptors().await?;
+        let fingerprint = resource_catalog_fingerprint(&resources);
+        let offset = parse_resource_cursor(cursor, &fingerprint, resources.len())?;
+        let end = (offset + PAGE_SIZE).min(resources.len());
+        let next_cursor = (end < resources.len()).then(|| format!("v1:{end}:{fingerprint}"));
+
+        Ok(ListResourcesResult {
+            meta: None,
+            next_cursor,
+            resources: resources[offset..end].to_vec(),
+        })
     }
 
     pub fn list_resource_template_descriptors(&self) -> Vec<ResourceTemplate> {
@@ -241,7 +257,7 @@ impl ObsidianMcp {
                 ResourceContents::text(bases.join("\n"), uri).with_mime_type("text/plain")
             }
             ObsidianResourceUri::NotesIndex => {
-                let notes = self.list_note_paths(None, Some(2_000)).await?;
+                let notes = self.discover_note_paths(None).await?;
                 ResourceContents::text(notes.join("\n"), uri).with_mime_type("text/plain")
             }
             ObsidianResourceUri::TagsIndex => {
@@ -340,6 +356,54 @@ impl ObsidianMcp {
 
         Ok(ReadResourceResult::new(vec![contents]))
     }
+}
+
+fn resource_catalog_fingerprint(resources: &[Resource]) -> String {
+    let mut hasher = Sha256::new();
+    for resource in resources {
+        hasher.update((resource.uri.len() as u64).to_be_bytes());
+        hasher.update(resource.uri.as_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn parse_resource_cursor(
+    cursor: Option<&str>,
+    expected_fingerprint: &str,
+    catalog_len: usize,
+) -> AppResult<usize> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let mut parts = cursor.split(':');
+    let version = parts.next();
+    let offset = parts.next();
+    let fingerprint = parts.next();
+    if version != Some("v1") || parts.next().is_some() {
+        return Err(ObsidianMcpError::InvalidInput(
+            "Invalid resources/list cursor".to_string(),
+        ));
+    }
+    let offset = offset
+        .and_then(|offset| offset.parse::<usize>().ok())
+        .ok_or_else(|| {
+            ObsidianMcpError::InvalidInput("Invalid resources/list cursor offset".to_string())
+        })?;
+    if fingerprint != Some(expected_fingerprint) {
+        return Err(ObsidianMcpError::InvalidInput(
+            "Stale resources/list cursor; the resource catalog changed".to_string(),
+        ));
+    }
+    if offset >= catalog_len {
+        return Err(ObsidianMcpError::InvalidInput(
+            "Invalid resources/list cursor offset".to_string(),
+        ));
+    }
+    Ok(offset)
 }
 
 fn serialize_resource_json(value: &impl rmcp::serde::Serialize) -> AppResult<String> {

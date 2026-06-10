@@ -56,6 +56,8 @@ impl ObsidianMcp {
         let path = VaultRelativePath::base(path)?;
         let view = validate_base_text(view)?;
         let name = validate_base_item_name(name)?;
+        self.query_base_data(&path.as_cli_arg(), Some(&view), Some(1))
+            .await?;
         let mut command = ObsidianCommand::new("base:create")
             .parameter("path", path.as_cli_arg())
             .parameter("view", &view)

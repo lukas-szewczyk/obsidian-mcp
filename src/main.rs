@@ -11,6 +11,10 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let service = ObsidianMcp::from_env().map_err(|error| error.to_string())?;
+    service
+        .validate_vault()
+        .await
+        .map_err(|error| error.to_string())?;
     let running = service
         .serve(stdio())
         .await

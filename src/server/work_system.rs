@@ -26,7 +26,7 @@ impl ObsidianMcp {
     ) -> AppResult<SetPropertyResponse> {
         let path = VaultRelativePath::markdown(path)?;
         let name = PropertyName::parse(name)?;
-        if !self.note_exists_at(&path).await {
+        if !self.note_exists_at(&path).await? {
             return Err(ObsidianMcpError::InvalidInput(
                 "Note does not exist; create it before setting properties".to_string(),
             ));
@@ -152,7 +152,7 @@ impl ObsidianMcp {
         content: &str,
     ) -> AppResult<PreviewNoteChangeResponse> {
         let path = VaultRelativePath::markdown(path)?;
-        let exists = self.note_exists_at(&path).await;
+        let exists = self.note_exists_at(&path).await?;
         match mode {
             NoteChangeMode::Create if exists => {
                 return Err(ObsidianMcpError::InvalidInput(

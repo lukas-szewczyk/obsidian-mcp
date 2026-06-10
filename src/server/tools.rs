@@ -16,11 +16,11 @@ impl ObsidianMcp {
             open_world_hint = false
         )
     )]
-    async fn vault_info(&self) -> Result<Json<VaultInfoResponse>, String> {
+    async fn vault_info(&self) -> Result<Json<VaultInfoResponse>, McpError> {
         self.vault_info_data()
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -35,11 +35,11 @@ impl ObsidianMcp {
     async fn list_notes(
         &self,
         Parameters(ListNotesRequest { directory, limit }): Parameters<ListNotesRequest>,
-    ) -> Result<Json<ListNotesResponse>, String> {
+    ) -> Result<Json<ListNotesResponse>, McpError> {
         let notes = self
             .list_note_paths(directory.as_deref(), limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListNotesResponse {
             directory,
             count: notes.len(),
@@ -59,12 +59,12 @@ impl ObsidianMcp {
     async fn read_note(
         &self,
         Parameters(ReadNoteRequest { path }): Parameters<ReadNoteRequest>,
-    ) -> Result<Json<ReadNoteResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<ReadNoteResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let content = self
             .read_note_content_at(&normalized_path)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ReadNoteResponse {
             path: normalized_path.as_cli_arg(),
             content,
@@ -84,12 +84,12 @@ impl ObsidianMcp {
     async fn create_note(
         &self,
         Parameters(CreateNoteRequest { path, content }): Parameters<CreateNoteRequest>,
-    ) -> Result<Json<CreateNoteResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<CreateNoteResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let message = self
             .create_note_content(&normalized_path.as_cli_arg(), &content)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(CreateNoteResponse {
             path: normalized_path.as_cli_arg(),
             message,
@@ -109,12 +109,12 @@ impl ObsidianMcp {
     async fn replace_note(
         &self,
         Parameters(ReplaceNoteRequest { path, content }): Parameters<ReplaceNoteRequest>,
-    ) -> Result<Json<ReplaceNoteResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<ReplaceNoteResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let message = self
             .replace_note_content(&normalized_path.as_cli_arg(), &content)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ReplaceNoteResponse {
             path: normalized_path.as_cli_arg(),
             message,
@@ -134,12 +134,12 @@ impl ObsidianMcp {
     async fn append_note(
         &self,
         Parameters(AppendNoteRequest { path, content }): Parameters<AppendNoteRequest>,
-    ) -> Result<Json<AppendNoteResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<AppendNoteResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let message = self
             .append_note_content(&normalized_path.as_cli_arg(), &content)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(AppendNoteResponse {
             path: normalized_path.as_cli_arg(),
             message,
@@ -162,11 +162,11 @@ impl ObsidianMcp {
             directory,
             limit,
         }): Parameters<SearchNotesRequest>,
-    ) -> Result<Json<SearchNotesResponse>, String> {
+    ) -> Result<Json<SearchNotesResponse>, McpError> {
         let matches = self
             .search_note_contents(&query, directory.as_deref(), limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(SearchNotesResponse {
             query: query.trim().to_string(),
             directory,
@@ -192,7 +192,7 @@ impl ObsidianMcp {
             sort_by_count,
             limit,
         }): Parameters<ListTagsRequest>,
-    ) -> Result<Json<ListTagsResponse>, String> {
+    ) -> Result<Json<ListTagsResponse>, McpError> {
         let tags = self
             .list_tags_data(
                 path.as_deref(),
@@ -201,7 +201,7 @@ impl ObsidianMcp {
                 limit,
             )
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListTagsResponse {
             path,
             count: tags.len(),
@@ -225,8 +225,8 @@ impl ObsidianMcp {
             counts,
             limit,
         }): Parameters<ListBacklinksRequest>,
-    ) -> Result<Json<ListBacklinksResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<ListBacklinksResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let backlinks = self
             .list_backlinks_data(
                 &normalized_path.as_cli_arg(),
@@ -234,7 +234,7 @@ impl ObsidianMcp {
                 limit,
             )
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListBacklinksResponse {
             path: normalized_path.as_cli_arg(),
             count: backlinks.len(),
@@ -254,11 +254,11 @@ impl ObsidianMcp {
     async fn get_note_context(
         &self,
         Parameters(GetNoteContextRequest { path, limit }): Parameters<GetNoteContextRequest>,
-    ) -> Result<Json<NoteContextResponse>, String> {
+    ) -> Result<Json<NoteContextResponse>, McpError> {
         self.get_note_context_data(&path, limit)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -273,11 +273,11 @@ impl ObsidianMcp {
     async fn audit_vault(
         &self,
         Parameters(AuditVaultRequest { limit }): Parameters<AuditVaultRequest>,
-    ) -> Result<Json<VaultAuditResponse>, String> {
+    ) -> Result<Json<VaultAuditResponse>, McpError> {
         self.audit_vault_data(limit)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -292,8 +292,8 @@ impl ObsidianMcp {
     async fn list_bases(
         &self,
         Parameters(ListBasesRequest { limit }): Parameters<ListBasesRequest>,
-    ) -> Result<Json<ListBasesResponse>, String> {
-        let bases = self.list_bases_data(limit).await.map_err(error_message)?;
+    ) -> Result<Json<ListBasesResponse>, McpError> {
+        let bases = self.list_bases_data(limit).await.map_err(tool_mcp_error)?;
         Ok(Json(ListBasesResponse {
             count: bases.len(),
             bases,
@@ -312,11 +312,11 @@ impl ObsidianMcp {
     async fn query_base(
         &self,
         Parameters(QueryBaseRequest { path, view, limit }): Parameters<QueryBaseRequest>,
-    ) -> Result<Json<QueryBaseResponse>, String> {
+    ) -> Result<Json<QueryBaseResponse>, McpError> {
         self.query_base_data(&path, view.as_deref(), limit)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -337,11 +337,11 @@ impl ObsidianMcp {
             name,
             content,
         }): Parameters<CreateBaseItemRequest>,
-    ) -> Result<Json<CreateBaseItemResponse>, String> {
+    ) -> Result<Json<CreateBaseItemResponse>, McpError> {
         self.create_base_item_data(&path, &view, &name, content.as_deref())
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -353,11 +353,11 @@ impl ObsidianMcp {
             open_world_hint = false
         )
     )]
-    async fn read_daily_note(&self) -> Result<Json<ReadDailyNoteResponse>, String> {
+    async fn read_daily_note(&self) -> Result<Json<ReadDailyNoteResponse>, McpError> {
         let content = self
             .read_daily_note_content()
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ReadDailyNoteResponse { content }))
     }
 
@@ -374,11 +374,11 @@ impl ObsidianMcp {
     async fn append_daily_note(
         &self,
         Parameters(AppendDailyNoteRequest { content, inline }): Parameters<AppendDailyNoteRequest>,
-    ) -> Result<Json<AppendDailyNoteResponse>, String> {
+    ) -> Result<Json<AppendDailyNoteResponse>, McpError> {
         let message = self
             .append_daily_note_content(&content, inline.unwrap_or(false))
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(AppendDailyNoteResponse { message }))
     }
 
@@ -394,11 +394,11 @@ impl ObsidianMcp {
     async fn read_daily_notes(
         &self,
         Parameters(ReadDailyNotesRequest { from, to, limit }): Parameters<ReadDailyNotesRequest>,
-    ) -> Result<Json<ReadDailyNotesResponse>, String> {
+    ) -> Result<Json<ReadDailyNotesResponse>, McpError> {
         let notes = self
             .read_daily_notes_data(&from, &to, limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ReadDailyNotesResponse {
             from,
             to,
@@ -423,12 +423,12 @@ impl ObsidianMcp {
             status,
             limit,
         }): Parameters<ListTasksRequest>,
-    ) -> Result<Json<ListTasksResponse>, String> {
+    ) -> Result<Json<ListTasksResponse>, McpError> {
         let target = target.unwrap_or_default();
         let tasks = self
             .list_tasks_data(&target, status.as_ref(), limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListTasksResponse {
             target,
             status,
@@ -450,11 +450,11 @@ impl ObsidianMcp {
     async fn create_task(
         &self,
         Parameters(CreateTaskRequest { target, text }): Parameters<CreateTaskRequest>,
-    ) -> Result<Json<CreateTaskResponse>, String> {
+    ) -> Result<Json<CreateTaskResponse>, McpError> {
         let (target, task) = self
             .create_task_data(&target, &text)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(CreateTaskResponse {
             message: format!("Created task in {target}"),
             target,
@@ -467,7 +467,7 @@ impl ObsidianMcp {
         annotations(
             title = "Set task status",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
         )
@@ -475,12 +475,12 @@ impl ObsidianMcp {
     async fn set_task_status(
         &self,
         Parameters(SetTaskStatusRequest { path, line, status }): Parameters<SetTaskStatusRequest>,
-    ) -> Result<Json<SetTaskStatusResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<SetTaskStatusResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let status = self
             .set_task_status_data(&normalized_path.as_cli_arg(), line, &status)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(SetTaskStatusResponse {
             path: normalized_path.as_cli_arg(),
             line,
@@ -501,11 +501,11 @@ impl ObsidianMcp {
     async fn list_projects(
         &self,
         Parameters(ListProjectsRequest { directory, limit }): Parameters<ListProjectsRequest>,
-    ) -> Result<Json<ListProjectsResponse>, String> {
+    ) -> Result<Json<ListProjectsResponse>, McpError> {
         let (directory, projects) = self
             .list_project_note_paths(directory.as_deref(), limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListProjectsResponse {
             directory,
             count: projects.len(),
@@ -525,12 +525,12 @@ impl ObsidianMcp {
     async fn list_properties(
         &self,
         Parameters(ListPropertiesRequest { path }): Parameters<ListPropertiesRequest>,
-    ) -> Result<Json<ListPropertiesResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<ListPropertiesResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let properties = self
             .list_properties_data(&normalized_path.as_cli_arg())
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListPropertiesResponse {
             path: normalized_path.as_cli_arg(),
             count: properties.len(),
@@ -543,7 +543,7 @@ impl ObsidianMcp {
         annotations(
             title = "Set note property",
             read_only_hint = false,
-            destructive_hint = false,
+            destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
         )
@@ -557,7 +557,7 @@ impl ObsidianMcp {
             property_type,
             preview,
         }): Parameters<SetPropertyRequest>,
-    ) -> Result<Json<SetPropertyResponse>, String> {
+    ) -> Result<Json<SetPropertyResponse>, McpError> {
         self.set_property_data(
             &path,
             &name,
@@ -567,7 +567,7 @@ impl ObsidianMcp {
         )
         .await
         .map(Json)
-        .map_err(error_message)
+        .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -586,13 +586,15 @@ impl ObsidianMcp {
             target,
             limit,
         }): Parameters<ListOverdueTasksRequest>,
-    ) -> Result<Json<ListOverdueTasksResponse>, String> {
-        let as_of = DailyDate::parse(&as_of).map_err(error_message)?.to_string();
+    ) -> Result<Json<ListOverdueTasksResponse>, McpError> {
+        let as_of = DailyDate::parse(&as_of)
+            .map_err(tool_mcp_error)?
+            .to_string();
         let target = target.unwrap_or_default();
         let tasks = self
             .list_overdue_tasks_data(&as_of, &target, limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListOverdueTasksResponse {
             as_of,
             target,
@@ -617,12 +619,12 @@ impl ObsidianMcp {
             status,
             limit,
         }): Parameters<ListTasksByProjectRequest>,
-    ) -> Result<Json<ListTasksByProjectResponse>, String> {
-        let normalized_path = VaultRelativePath::markdown(&path).map_err(error_message)?;
+    ) -> Result<Json<ListTasksByProjectResponse>, McpError> {
+        let normalized_path = VaultRelativePath::markdown(&path).map_err(tool_mcp_error)?;
         let tasks = self
             .list_tasks_by_project_data(&normalized_path.as_cli_arg(), status.as_ref(), limit)
             .await
-            .map_err(error_message)?;
+            .map_err(tool_mcp_error)?;
         Ok(Json(ListTasksByProjectResponse {
             path: normalized_path.as_cli_arg(),
             status,
@@ -643,11 +645,11 @@ impl ObsidianMcp {
     async fn get_project_status(
         &self,
         Parameters(GetProjectStatusRequest { path, limit }): Parameters<GetProjectStatusRequest>,
-    ) -> Result<Json<ProjectStatusResponse>, String> {
+    ) -> Result<Json<ProjectStatusResponse>, McpError> {
         self.get_project_status_data(&path, limit)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
@@ -666,15 +668,15 @@ impl ObsidianMcp {
             mode,
             content,
         }): Parameters<PreviewNoteChangeRequest>,
-    ) -> Result<Json<PreviewNoteChangeResponse>, String> {
+    ) -> Result<Json<PreviewNoteChangeResponse>, McpError> {
         self.preview_note_change_data(&path, &mode, &content)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
-        description = "Preflight one to fifty note create, replace, or append operations and return exact proposed contents plus a deterministic approval token without modifying the vault.",
+        description = "Preflight one to fifty note create, replace, or append operations for best-effort optimistic concurrency and return exact proposed contents plus a deterministic approval token without modifying the vault.",
         annotations(
             title = "Preview note change set",
             read_only_hint = true,
@@ -685,15 +687,15 @@ impl ObsidianMcp {
     async fn preview_change_set(
         &self,
         Parameters(PreviewChangeSetRequest { changes }): Parameters<PreviewChangeSetRequest>,
-    ) -> Result<Json<PreviewChangeSetResponse>, String> {
+    ) -> Result<Json<PreviewChangeSetResponse>, McpError> {
         self.preview_change_set_data(changes)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 
     #[tool(
-        description = "Apply an explicitly approved note change set only if a fresh full preflight produces the same preview token.",
+        description = "Apply an explicitly approved note change set sequentially and non-atomically only if a fresh full preflight produces the same preview token. This is best-effort optimistic concurrency, not compare-and-swap.",
         annotations(
             title = "Apply note change set",
             read_only_hint = false,
@@ -708,10 +710,10 @@ impl ObsidianMcp {
             changes,
             preview_token,
         }): Parameters<ApplyChangeSetRequest>,
-    ) -> Result<Json<ApplyChangeSetResponse>, String> {
+    ) -> Result<Json<ApplyChangeSetResponse>, McpError> {
         self.apply_change_set_data(changes, &preview_token)
             .await
             .map(Json)
-            .map_err(error_message)
+            .map_err(tool_mcp_error)
     }
 }

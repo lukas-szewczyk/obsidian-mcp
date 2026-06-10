@@ -9,8 +9,13 @@ use std::fmt;
 pub enum ObsidianMcpError {
     InvalidInput(String),
     InvalidPath(String),
+    NoteNotFound(String),
+    VaultMismatch(String),
     CliUnavailable(String),
     CliFailed(String),
+    CliProtocol(String),
+    CliInfrastructure(String),
+    CliTimeout(String),
     Parse(String),
     ResourceNotFound(String),
 }
@@ -20,8 +25,13 @@ impl fmt::Display for ObsidianMcpError {
         let message = match self {
             Self::InvalidInput(message)
             | Self::InvalidPath(message)
+            | Self::NoteNotFound(message)
+            | Self::VaultMismatch(message)
             | Self::CliUnavailable(message)
             | Self::CliFailed(message)
+            | Self::CliProtocol(message)
+            | Self::CliInfrastructure(message)
+            | Self::CliTimeout(message)
             | Self::Parse(message)
             | Self::ResourceNotFound(message) => message,
         };

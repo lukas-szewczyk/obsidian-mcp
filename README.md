@@ -10,24 +10,29 @@ The current source tree targets `v0.3.0`. The latest published GitHub Release is
 
 - macOS on Apple Silicon for the prebuilt `v0.2.0` binary
 - Obsidian running with **Settings > General > Command line interface** enabled
-- A local Obsidian vault
+- A local Obsidian vault already registered in Obsidian
 - Codex or another MCP client with stdio server support
 - Rust stable when building from source
 
 ## Safety Model
 
 - Every note path must be relative to the configured vault.
+- Startup validates the canonical configured vault path and optional configured vault name against `obsidian vault`; mismatches prevent the server from exposing tools.
 - Note operations accept Markdown files only.
 - `create_note` refuses to replace an existing note.
 - `replace_note` refuses to create a missing note.
+- Writes fail closed when existence checks, reads, or other preconditions cannot be established.
 - `preview_note_change` shows exact proposed note contents without writing.
 - `preview_change_set` preflights every operation before writing and returns a deterministic approval token.
-- `apply_change_set` refuses all writes when the approved token no longer matches current note state.
+- `apply_change_set` uses best-effort optimistic concurrency: it validates the token immediately before sequential application, but is not atomic and does not provide compare-and-swap semantics.
 - `set_property` supports a read-only preview mode.
 - Task and append operations are explicit and non-idempotent where appropriate.
 - `create_base_item` requires an explicit Base path, named view, and item name.
 - The server queries Bases but does not create or edit `.base` definitions.
 - The server does not expose delete, move, rename, or generic CLI execution.
+- CLI stdout and stderr are drained concurrently and capped at 8 MiB each. Oversized output becomes an error.
+- Obsidian CLI content and property values remain visible briefly in process arguments because Obsidian 1.12.7 provides no documented stdin or file-content alternative. These values are redacted from server diagnostics.
+- A timed-out write is reported as having indeterminate completion and is never retried automatically.
 - MCP protocol output is written to stdout; diagnostics are written to stderr.
 
 ## Install
@@ -76,8 +81,8 @@ Environment variables:
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `OBSIDIAN_VAULT_PATH` | No | Project `obsidian-vault` fixture | Local vault directory |
-| `OBSIDIAN_VAULT_NAME` | No | Most recently focused vault | Prefixes CLI calls with `vault=<name>` |
+| `OBSIDIAN_VAULT_PATH` | No | Project `obsidian-vault` fixture | Registered local vault directory; must match the CLI-reported canonical path |
+| `OBSIDIAN_VAULT_NAME` | No | None | Optional registered vault name; must match the CLI-reported name |
 | `OBSIDIAN_CLI` | No | `obsidian` | Obsidian CLI executable |
 | `OBSIDIAN_PROJECTS_PATH` | No | `Projects` | Vault-relative project notes directory |
 
@@ -139,7 +144,7 @@ Property writes accept optional types: `text`, `list`, `number`, `checkbox`, `da
 
 Base queries return the dynamic JSON columns configured by the selected view. `create_base_item` does not support preview because Obsidian determines the new note's properties and location from the named view.
 
-For multi-note writes, send the same ordered `changes` array to `preview_change_set` and `apply_change_set`, together with the accepted `preview_token`. A changed note or operation produces `conflict` and no writes. A write error after application starts produces `partial_failure`; earlier writes remain applied and later operations are skipped.
+For multi-note writes, send the same ordered `changes` array to `preview_change_set` and `apply_change_set`, together with the accepted `preview_token`. The token is checked against a fresh full preflight immediately before application starts. A mismatch produces `conflict` and no writes. Operations then apply sequentially and non-atomically; an external modification after preflight may be overwritten because the Obsidian CLI does not provide compare-and-swap writes. A write error after application starts produces `partial_failure`; earlier writes remain applied and later operations are skipped.
 
 ### Resources
 
@@ -197,13 +202,10 @@ Run the MCP Inspector against the local fixture:
 
 The stable read-only Work System evaluation set is in `evaluations/work-system-v0.3.0.xml`.
 
-Run the ignored live smoke test against an open Obsidian vault:
+Prepare deterministic fixtures and run the guarded live suite. The script refuses to write anywhere except `/Users/lukasz/Desktop/test-vault` and restores the fixture state on exit:
 
 ```bash
-OBSIDIAN_VAULT_PATH="/absolute/path/to/vault" \
-OBSIDIAN_VAULT_NAME=main \
-OBSIDIAN_CLI="/Applications/Obsidian.app/Contents/MacOS/obsidian" \
-cargo test --locked real_cli_smoke_ -- --ignored --nocapture
+./scripts/run-live-tests.sh
 ```
 
 ## License

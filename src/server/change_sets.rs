@@ -136,7 +136,7 @@ impl ObsidianMcp {
 
         for (index, change) in changes.into_iter().enumerate() {
             let path = VaultRelativePath::markdown(&change.path)?;
-            let exists = self.note_exists_at(&path).await;
+            let exists = self.note_exists_at(&path).await?;
             let current_content = if exists {
                 Some(self.read_note_content_at(&path).await?)
             } else {

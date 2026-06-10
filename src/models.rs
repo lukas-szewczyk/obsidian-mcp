@@ -1,30 +1,45 @@
 use rmcp::schemars;
 
+/// Schema for an arbitrary JSON value as a top-level output property.
+///
+/// `serde_json::Value` derives the boolean schema `true`, which MCP clients
+/// reject when it appears directly under `outputSchema.properties` (they expect
+/// an object-form schema). An empty object schema accepts any value, including
+/// `null`, while remaining valid JSON Schema.
+fn any_json_value_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({})
+}
+
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ListNotesRequest {
+    /// Optional vault-relative directory. Absolute paths and traversal are rejected.
     pub directory: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadNoteRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateNoteRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub content: String,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ReplaceNoteRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub content: String,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct AppendNoteRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub content: String,
 }
@@ -46,6 +61,7 @@ pub struct ListTagsRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ListBacklinksRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub counts: Option<bool>,
     pub limit: Option<usize>,
@@ -53,6 +69,7 @@ pub struct ListBacklinksRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct GetNoteContextRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub limit: Option<usize>,
 }
@@ -69,6 +86,7 @@ pub struct ListBasesRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct QueryBaseRequest {
+    /// Vault-relative `.base` path. Absolute paths and traversal are rejected.
     pub path: String,
     pub view: Option<String>,
     pub limit: Option<usize>,
@@ -76,6 +94,7 @@ pub struct QueryBaseRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateBaseItemRequest {
+    /// Vault-relative `.base` path. Absolute paths and traversal are rejected.
     pub path: String,
     pub view: String,
     pub name: String,
@@ -90,7 +109,11 @@ pub struct AppendDailyNoteRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadDailyNotesRequest {
+    /// Inclusive start date in `YYYY-MM-DD` format.
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}$"))]
     pub from: String,
+    /// Inclusive end date in `YYYY-MM-DD` format.
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}$"))]
     pub to: String,
     pub limit: Option<usize>,
 }
@@ -110,7 +133,10 @@ pub struct CreateTaskRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct SetTaskStatusRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
+    /// Positive one-based line number.
+    #[schemars(range(min = 1))]
     pub line: usize,
     pub status: TaskStatus,
 }
@@ -123,11 +149,13 @@ pub struct ListProjectsRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ListPropertiesRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct SetPropertyRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub name: String,
     pub value: String,
@@ -137,6 +165,8 @@ pub struct SetPropertyRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ListOverdueTasksRequest {
+    /// Deterministic comparison date in `YYYY-MM-DD` format.
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}$"))]
     pub as_of: String,
     pub target: Option<TaskReadTarget>,
     pub limit: Option<usize>,
@@ -144,6 +174,7 @@ pub struct ListOverdueTasksRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ListTasksByProjectRequest {
+    /// Vault-relative Markdown project path. Absolute paths and traversal are rejected.
     pub path: String,
     pub status: Option<TaskStatus>,
     pub limit: Option<usize>,
@@ -151,12 +182,14 @@ pub struct ListTasksByProjectRequest {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct GetProjectStatusRequest {
+    /// Vault-relative Markdown project path. Absolute paths and traversal are rejected.
     pub path: String,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct PreviewNoteChangeRequest {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub mode: NoteChangeMode,
     pub content: String,
@@ -164,6 +197,7 @@ pub struct PreviewNoteChangeRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ChangeSetOperation {
+    /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
     pub path: String,
     pub mode: NoteChangeMode,
     pub content: String,
@@ -171,11 +205,15 @@ pub struct ChangeSetOperation {
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct PreviewChangeSetRequest {
+    /// One to fifty ordered note changes.
+    #[schemars(length(min = 1, max = 50))]
     pub changes: Vec<ChangeSetOperation>,
 }
 
 #[derive(Debug, rmcp::serde::Deserialize, schemars::JsonSchema)]
 pub struct ApplyChangeSetRequest {
+    /// One to fifty ordered note changes.
+    #[schemars(length(min = 1, max = 50))]
     pub changes: Vec<ChangeSetOperation>,
     pub preview_token: String,
 }
@@ -343,6 +381,7 @@ pub enum TaskReadTarget {
     Vault,
     Daily,
     Note {
+        /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
         path: String,
     },
 }
@@ -359,7 +398,10 @@ pub enum TaskReadTarget {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TaskWriteTarget {
     Daily,
-    Note { path: String },
+    Note {
+        /// Vault-relative Markdown path. Absolute paths and traversal are rejected.
+        path: String,
+    },
 }
 
 #[derive(
@@ -375,7 +417,11 @@ pub enum TaskWriteTarget {
 pub enum TaskStatus {
     Todo,
     Done,
-    Custom { value: String },
+    Custom {
+        /// Exactly one task status character.
+        #[schemars(length(equal = 1))]
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
@@ -446,6 +492,7 @@ pub struct SetPropertyResponse {
     pub name: String,
     pub value: String,
     pub property_type: Option<PropertyType>,
+    #[schemars(schema_with = "any_json_value_schema")]
     pub previous_value: Option<rmcp::serde_json::Value>,
     pub applied: bool,
     pub message: String,
