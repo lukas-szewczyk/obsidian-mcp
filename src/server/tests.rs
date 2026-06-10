@@ -1301,78 +1301,32 @@ async fn vault_name_prefixes_cli_calls() {
     );
 }
 
-#[tokio::test]
-async fn resource_descriptors_include_static_resources_and_notes() {
+#[test]
+fn resource_descriptors_are_curated_and_do_not_query_vault() {
     let vault = TestVault::new();
-    let cli = FakeObsidianCli::new([Ok("Projects/Rust.md\nSpace Note.md\nimage.png\n")]);
-    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
+    let cli = FakeObsidianCli::default();
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
 
-    let resources = server.list_resource_descriptors().await.unwrap();
+    let resources = server.list_resource_descriptors();
     let uris = resources
         .iter()
         .map(|resource| resource.uri.as_str())
         .collect::<Vec<_>>();
 
-    assert!(uris.contains(&"obsidian://vault/info"));
-    assert!(uris.contains(&"obsidian://vault/audit"));
-    assert!(uris.contains(&"obsidian://bases/index"));
-    assert!(uris.contains(&"obsidian://notes/index"));
-    assert!(uris.contains(&"obsidian://tags/index"));
-    assert!(uris.contains(&"obsidian://daily/today"));
-    assert!(uris.contains(&"obsidian://tasks/open"));
-    assert!(uris.contains(&"obsidian://projects/index"));
-    assert!(uris.contains(&"obsidian://note/Projects/Rust.md"));
-    assert!(uris.contains(&"obsidian://note/Space%20Note.md"));
-    assert!(uris.contains(&"obsidian://backlinks/Projects/Rust.md"));
-    assert!(uris.contains(&"obsidian://context/Projects/Rust.md"));
-    assert!(!uris.iter().any(|uri| uri.contains("image.png")));
-}
-
-#[tokio::test]
-async fn resource_list_paginates_complete_catalog_and_rejects_bad_cursors() {
-    let vault = TestVault::new();
-    let notes = (0..201)
-        .map(|index| format!("Generated/{index:03}.md"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let cli = FakeObsidianCli::outputs([
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes.clone(),
-        notes,
-    ]);
-    let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
-    let mut cursor = None;
-    let mut uris = Vec::new();
-    loop {
-        let page = server.list_resource_page(cursor.as_deref()).await.unwrap();
-        uris.extend(
-            page.resources
-                .into_iter()
-                .map(|resource| resource.uri.clone()),
-        );
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-
-    assert_eq!(uris.len(), 611);
-    let unique = uris.iter().collect::<std::collections::HashSet<_>>();
-    assert_eq!(unique.len(), uris.len());
-
-    assert!(server.list_resource_page(Some("bad")).await.is_err());
-    assert!(
-        server
-            .list_resource_page(Some(&format!("v1:100:{}", "0".repeat(64))))
-            .await
-            .is_err()
+    assert_eq!(
+        uris,
+        vec![
+            "obsidian://vault/info",
+            "obsidian://vault/audit",
+            "obsidian://bases/index",
+            "obsidian://notes/index",
+            "obsidian://tags/index",
+            "obsidian://daily/today",
+            "obsidian://tasks/open",
+            "obsidian://projects/index",
+        ]
     );
+    assert!(cli.calls().is_empty());
 }
 
 #[tokio::test]
@@ -1400,21 +1354,17 @@ fn resource_templates_expose_note_uri_template() {
 
     let templates = server.list_resource_template_descriptors();
 
-    assert_eq!(templates.len(), 8);
+    assert_eq!(templates.len(), 6);
     assert_eq!(templates[0].uri_template, "obsidian://note/{path}");
     assert_eq!(templates[0].mime_type.as_deref(), Some("text/markdown"));
-    assert_eq!(templates[1].uri_template, "obsidian://backlinks/{path}");
-    assert_eq!(templates[1].mime_type.as_deref(), Some("text/plain"));
-    assert_eq!(templates[2].uri_template, "obsidian://context/{path}");
-    assert_eq!(templates[2].mime_type.as_deref(), Some("application/json"));
-    assert_eq!(templates[3].uri_template, "obsidian://base/{path}");
+    assert_eq!(templates[1].uri_template, "obsidian://base/{path}");
+    assert_eq!(templates[1].mime_type.as_deref(), Some("application/json"));
+    assert_eq!(templates[2].uri_template, "obsidian://daily/{date}");
+    assert_eq!(templates[2].mime_type.as_deref(), Some("text/markdown"));
+    assert_eq!(templates[3].uri_template, "obsidian://tasks/overdue/{date}");
     assert_eq!(templates[3].mime_type.as_deref(), Some("application/json"));
-    assert_eq!(templates[4].uri_template, "obsidian://daily/{date}");
-    assert_eq!(templates[4].mime_type.as_deref(), Some("text/markdown"));
-    assert_eq!(templates[5].uri_template, "obsidian://tasks/overdue/{date}");
-    assert_eq!(templates[5].mime_type.as_deref(), Some("application/json"));
-    assert_eq!(templates[6].uri_template, "obsidian://project/{path}");
-    assert_eq!(templates[7].uri_template, "obsidian://properties/{path}");
+    assert_eq!(templates[4].uri_template, "obsidian://project/{path}");
+    assert_eq!(templates[5].uri_template, "obsidian://properties/{path}");
 }
 
 #[tokio::test]
@@ -1468,13 +1418,9 @@ async fn read_static_resources_returns_vault_info_and_index() {
 }
 
 #[tokio::test]
-async fn read_tag_daily_and_backlink_resources() {
+async fn read_tag_and_daily_resources() {
     let vault = TestVault::new();
-    let cli = FakeObsidianCli::new([
-        Ok("#rust\t3\n#mcp\t2\n"),
-        Ok("# Daily\n"),
-        Ok("Ideas/MCP.md\t2\n"),
-    ]);
+    let cli = FakeObsidianCli::new([Ok("#rust\t3\n#mcp\t2\n"), Ok("# Daily\n")]);
     let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
 
     let tags = server
@@ -1485,54 +1431,54 @@ async fn read_tag_daily_and_backlink_resources() {
         .read_resource_uri("obsidian://daily/today")
         .await
         .unwrap();
-    let backlinks = server
-        .read_resource_uri("obsidian://backlinks/Projects/Rust.md")
-        .await
-        .unwrap();
 
     assert_resource_text_contains(&tags, "#rust\t3");
     assert_resource_text_contains(&daily, "# Daily");
-    assert_resource_text_contains(&backlinks, "Ideas/MCP.md\t2");
     assert_eq!(
         cli.calls()
             .iter()
             .map(|call| call.args.iter().map(String::as_str).collect::<Vec<_>>())
             .collect::<Vec<_>>(),
-        vec![
-            vec!["tags", "counts", "sort=count"],
-            vec!["daily:read"],
-            vec!["backlinks", "path=Projects/Rust.md", "counts"],
-        ]
+        vec![vec!["tags", "counts", "sort=count"], vec!["daily:read"],]
     );
 }
 
 #[tokio::test]
-async fn read_knowledge_graph_resources() {
+async fn read_vault_audit_resource() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
-        Ok("Alias\n"),
-        Ok("# Heading\n"),
-        Ok("Start.md\n"),
-        Ok("Start.md\t1\n"),
         Ok("Missing Guide\t1\tStart.md\n"),
         Ok("Knowledge/Orphan.md\n"),
         Ok("Knowledge/Dead End.md\n"),
     ]);
     let server = ObsidianMcp::with_runner(vault.path(), cli).unwrap();
 
-    let context = server
-        .read_resource_uri("obsidian://context/Projects/Rust.md")
-        .await
-        .unwrap();
     let audit = server
         .read_resource_uri("obsidian://vault/audit")
         .await
         .unwrap();
 
-    assert_resource_text_contains(&context, r#""alias_count": 1"#);
-    assert_resource_text_contains(&context, r#""outgoing_links": ["#);
     assert_resource_text_contains(&audit, r#""link": "Missing Guide""#);
     assert_resource_text_contains(&audit, r#""orphan_notes": ["#);
+}
+
+#[tokio::test]
+async fn removed_backlink_and_context_resource_uris_are_not_found_without_cli_calls() {
+    let vault = TestVault::new();
+    let cli = FakeObsidianCli::default();
+    let server = ObsidianMcp::with_runner(vault.path(), cli.clone()).unwrap();
+
+    for uri in [
+        "obsidian://backlinks/Projects/Rust.md",
+        "obsidian://context/Projects/Rust.md",
+    ] {
+        assert!(matches!(
+            server.read_resource_uri(uri).await,
+            Err(ObsidianMcpError::ResourceNotFound(_))
+        ));
+    }
+
+    assert!(cli.calls().is_empty());
 }
 
 #[tokio::test]
@@ -1660,10 +1606,6 @@ fn resource_uri_round_trips_percent_encoded_note_paths() {
         )
     );
     assert_eq!(
-        ObsidianResourceUri::parse("obsidian://context/Folder/Space%20Note.md").unwrap(),
-        ObsidianResourceUri::Context(VaultRelativePath::markdown("Folder/Space Note.md").unwrap())
-    );
-    assert_eq!(
         ObsidianResourceUri::parse("obsidian://vault/audit").unwrap(),
         ObsidianResourceUri::VaultAudit
     );
@@ -1679,6 +1621,14 @@ fn resource_uri_round_trips_percent_encoded_note_paths() {
         ObsidianResourceUri::parse("obsidian://tasks/overdue/2026-06-05").unwrap(),
         ObsidianResourceUri::TasksOverdue(DailyDate::parse("2026-06-05").unwrap())
     );
+    assert!(matches!(
+        ObsidianResourceUri::parse("obsidian://backlinks/Folder/Space%20Note.md"),
+        Err(ObsidianMcpError::ResourceNotFound(_))
+    ));
+    assert!(matches!(
+        ObsidianResourceUri::parse("obsidian://context/Folder/Space%20Note.md"),
+        Err(ObsidianMcpError::ResourceNotFound(_))
+    ));
     assert!(ObsidianResourceUri::parse("obsidian://note/bad%").is_err());
 }
 
@@ -1745,7 +1695,8 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
             [("path", "Projects/Rust.md")],
         ))
         .unwrap();
-    assert_prompt_text_contains(&backlinks, "obsidian://backlinks/Projects/Rust.md");
+    assert_prompt_text_contains(&backlinks, "list_backlinks");
+    assert_prompt_text_contains(&backlinks, "obsidian://note/Projects/Rust.md");
 
     let weekly = server
         .get_prompt_result(prompt_request(
@@ -1764,6 +1715,7 @@ fn prompt_descriptors_and_prompt_messages_are_available() {
         .unwrap();
     assert_prompt_text_contains(&project, "obsidian://note/Projects/Rust.md");
     assert_prompt_text_contains(&project, "get_project_status");
+    assert_prompt_text_contains(&project, "list_backlinks");
 
     let inbox = server
         .get_prompt_result(prompt_request("inbox_triage", [("directory", "Inbox")]))
@@ -1846,7 +1798,6 @@ fn default_vault_path_points_to_project_vault() {
 async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     let vault = TestVault::new();
     let cli = FakeObsidianCli::new([
-        Ok("Projects/Rust.md\n"),
         Ok(" \t- [ ] Review release\tTodo.md\t4\n"),
         Ok(" \t- [ ] Past due 📅 2026-06-01\tTodo.md\t4\n"),
         Ok("Missing Guide\t1\tStart.md\n"),
@@ -1871,7 +1822,9 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     let client = TestClient.serve(client_transport).await.unwrap();
 
     let tools = client.peer().list_all_tools().await.unwrap();
-    let resources = client.peer().list_all_resources().await.unwrap();
+    let resource_page = client.peer().list_resources(None).await.unwrap();
+    assert!(resource_page.next_cursor.is_none());
+    let resources = resource_page.resources;
     let templates = client.peer().list_all_resource_templates().await.unwrap();
     let prompts = client.peer().list_all_prompts().await.unwrap();
     let task_args = rmcp::serde_json::json!({
@@ -1956,6 +1909,7 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
 
     assert!(tools.iter().any(|tool| tool.name == "list_tasks"));
     assert!(tools.iter().any(|tool| tool.name == "get_project_status"));
+    assert!(tools.iter().any(|tool| tool.name == "list_backlinks"));
     assert!(tools.iter().any(|tool| tool.name == "get_note_context"));
     assert!(tools.iter().any(|tool| tool.name == "audit_vault"));
     assert!(tools.iter().any(|tool| tool.name == "list_bases"));
@@ -1963,20 +1917,21 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
     assert!(tools.iter().any(|tool| tool.name == "create_base_item"));
     assert!(tools.iter().any(|tool| tool.name == "preview_change_set"));
     assert!(tools.iter().any(|tool| tool.name == "apply_change_set"));
-    assert!(
+    assert_eq!(
         resources
             .iter()
-            .any(|resource| resource.uri == "obsidian://tasks/open")
-    );
-    assert!(
-        resources
-            .iter()
-            .any(|resource| resource.uri == "obsidian://vault/audit")
-    );
-    assert!(
-        resources
-            .iter()
-            .any(|resource| resource.uri == "obsidian://bases/index")
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "obsidian://vault/info",
+            "obsidian://vault/audit",
+            "obsidian://bases/index",
+            "obsidian://notes/index",
+            "obsidian://tags/index",
+            "obsidian://daily/today",
+            "obsidian://tasks/open",
+            "obsidian://projects/index",
+        ]
     );
     assert!(
         templates
@@ -1988,11 +1943,12 @@ async fn mcp_round_trip_exposes_tools_resources_and_prompts() {
             .iter()
             .any(|template| template.uri_template == "obsidian://project/{path}")
     );
-    assert!(
-        templates
-            .iter()
-            .any(|template| template.uri_template == "obsidian://context/{path}")
-    );
+    assert!(!templates.iter().any(|template| {
+        matches!(
+            template.uri_template.as_str(),
+            "obsidian://backlinks/{path}" | "obsidian://context/{path}"
+        )
+    }));
     assert!(
         templates
             .iter()
@@ -2083,7 +2039,7 @@ async fn real_cli_smoke_bases_reads() {
 
 #[tokio::test]
 #[ignore = "requires guarded fixtures in /Users/lukasz/Desktop/test-vault"]
-async fn real_cli_remediation_reads_writes_and_pagination() {
+async fn real_cli_remediation_reads_writes_and_large_output() {
     let server = guarded_real_cli_server();
     server.validate_vault().await.unwrap();
 
@@ -2136,17 +2092,7 @@ async fn real_cli_remediation_reads_writes_and_pagination() {
         .await
         .unwrap();
 
-    let mut cursor = None;
-    let mut resource_count = 0;
-    loop {
-        let page = server.list_resource_page(cursor.as_deref()).await.unwrap();
-        resource_count += page.resources.len();
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert!(resource_count > 611);
+    assert_eq!(server.list_resource_descriptors().len(), 8);
     let large_read = server
         .read_note_content("RemediationFixtures/Large.md")
         .await;

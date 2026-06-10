@@ -2,3 +2,4 @@
 .omx
 .agents
 skills-lock.json
+.env

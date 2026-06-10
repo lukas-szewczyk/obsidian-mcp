@@ -589,16 +589,6 @@ impl ServerHandler for ObsidianMcp {
         Ok(self.get_info())
     }
 
-    async fn list_resources(
-        &self,
-        request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, McpError> {
-        self.list_resource_page(request.and_then(|request| request.cursor).as_deref())
-            .await
-            .map_err(tool_mcp_error)
-    }
-
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -650,6 +640,16 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Multi-note change sets use best-effort optimistic concurrency: use preview_change_set, obtain explicit acceptance of its token, then call apply_change_set; application is sequential and non-atomic. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled, and the configured vault must already be registered in Obsidian. Paths must be relative to the configured vault.")
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult::with_all_items(
+            self.list_resource_descriptors(),
+        ))
     }
 }
 

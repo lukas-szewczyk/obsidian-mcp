@@ -224,12 +224,12 @@ impl ObsidianMcp {
             "backlink_review" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let backlinks_uri = ObsidianResourceUri::backlinks(&normalized_path);
                 let note_uri = ObsidianResourceUri::note(&normalized_path);
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Read `{backlinks_uri}` and the target note `{note_uri}`. Summarize incoming context, important relationships, and follow-up notes worth reading. Do not modify the vault."
+                        "Use `list_backlinks` for `{}` and read the target note `{note_uri}`. Summarize incoming context, important relationships, and follow-up notes worth reading. Do not modify the vault.",
+                        normalized_path.as_cli_arg()
                     ),
                 )])
                 .with_description("Review backlinks for one note."))
@@ -255,11 +255,10 @@ impl ObsidianMcp {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
                 let note_uri = ObsidianResourceUri::note(&normalized_path);
-                let backlinks_uri = ObsidianResourceUri::backlinks(&normalized_path);
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Use `get_project_status` for `{}`. Read project note `{note_uri}` and backlinks `{backlinks_uri}` only when more detail is needed. Summarize current state, properties, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
+                        "Use `get_project_status` for `{}`. Read project note `{note_uri}` and use `list_backlinks` only when more relationship detail is needed. Summarize current state, properties, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
                         normalized_path.as_cli_arg()
                     ),
                 )])

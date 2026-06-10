@@ -148,6 +148,8 @@ For multi-note writes, send the same ordered `changes` array to `preview_change_
 
 ### Resources
 
+`resources/list` exposes a small set of stable discovery entry points:
+
 | Resource | Content |
 | --- | --- |
 | `obsidian://vault/info` | Vault metadata |
@@ -158,14 +160,19 @@ For multi-note writes, send the same ordered `changes` array to `preview_change_
 | `obsidian://daily/today` | Today's daily note |
 | `obsidian://tasks/open` | Open tasks with path and line references |
 | `obsidian://projects/index` | Project note paths |
+
+Parameterized resources remain available through resource templates:
+
+| Resource template | Content |
+| --- | --- |
 | `obsidian://note/{path}` | One Markdown note |
-| `obsidian://backlinks/{path}` | Backlinks for one note |
-| `obsidian://context/{path}` | One-hop metadata context for one note |
 | `obsidian://base/{path}` | Dynamic JSON results from a Base's default view |
 | `obsidian://daily/{date}` | One daily note by `YYYY-MM-DD` |
 | `obsidian://tasks/overdue/{date}` | Incomplete tasks due before a date |
 | `obsidian://project/{path}` | Project note with properties, tasks, and backlinks |
 | `obsidian://properties/{path}` | Structured frontmatter properties for a note |
+
+Use the `list_backlinks` and `get_note_context` tools for note relationship data.
 
 ### Prompts
 

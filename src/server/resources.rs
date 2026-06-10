@@ -1,8 +1,7 @@
 use rmcp::model::{
-    AnnotateAble, ListResourcesResult, RawResource, RawResourceTemplate, ReadResourceResult,
-    Resource, ResourceContents, ResourceTemplate,
+    AnnotateAble, RawResource, RawResourceTemplate, ReadResourceResult, Resource, ResourceContents,
+    ResourceTemplate,
 };
-use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -19,8 +18,6 @@ pub(super) enum ObsidianResourceUri {
     TasksOverdue(DailyDate),
     ProjectsIndex,
     Note(VaultRelativePath),
-    Backlinks(VaultRelativePath),
-    Context(VaultRelativePath),
     Base(VaultRelativePath),
     Project(VaultRelativePath),
     Properties(VaultRelativePath),
@@ -38,8 +35,6 @@ impl ObsidianResourceUri {
     const TASKS_OVERDUE_PREFIX: &'static str = "obsidian://tasks/overdue/";
     const PROJECTS_INDEX: &'static str = "obsidian://projects/index";
     const NOTE_PREFIX: &'static str = "obsidian://note/";
-    const BACKLINKS_PREFIX: &'static str = "obsidian://backlinks/";
-    const CONTEXT_PREFIX: &'static str = "obsidian://context/";
     const BASE_PREFIX: &'static str = "obsidian://base/";
     const PROJECT_PREFIX: &'static str = "obsidian://project/";
     const PROPERTIES_PREFIX: &'static str = "obsidian://properties/";
@@ -58,12 +53,6 @@ impl ObsidianResourceUri {
                 if let Some(encoded_path) = uri.strip_prefix(Self::NOTE_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Note(VaultRelativePath::markdown(&decoded_path)?))
-                } else if let Some(encoded_path) = uri.strip_prefix(Self::BACKLINKS_PREFIX) {
-                    let decoded_path = percent_decode_uri_path(encoded_path)?;
-                    Ok(Self::Backlinks(VaultRelativePath::markdown(&decoded_path)?))
-                } else if let Some(encoded_path) = uri.strip_prefix(Self::CONTEXT_PREFIX) {
-                    let decoded_path = percent_decode_uri_path(encoded_path)?;
-                    Ok(Self::Context(VaultRelativePath::markdown(&decoded_path)?))
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::BASE_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Base(VaultRelativePath::base(&decoded_path)?))
@@ -100,22 +89,6 @@ impl ObsidianResourceUri {
         format!("{}{date}", Self::DAILY_PREFIX)
     }
 
-    pub(super) fn backlinks(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::BACKLINKS_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
-    pub(super) fn context(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::CONTEXT_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
     pub(super) fn base(path: &VaultRelativePath) -> String {
         format!(
             "{}{}",
@@ -146,8 +119,8 @@ impl ObsidianResourceUri {
 }
 
 impl ObsidianMcp {
-    pub async fn list_resource_descriptors(&self) -> AppResult<Vec<Resource>> {
-        let mut resources = vec![
+    pub fn list_resource_descriptors(&self) -> Vec<Resource> {
+        vec![
             vault_info_resource(),
             vault_audit_resource(),
             bases_index_resource(),
@@ -156,29 +129,7 @@ impl ObsidianMcp {
             daily_today_resource(),
             tasks_open_resource(),
             projects_index_resource(),
-        ];
-        for note in self.discover_note_paths(None).await? {
-            let path = VaultRelativePath::markdown(&note)?;
-            resources.push(note_resource(&path));
-            resources.push(backlinks_resource(&path));
-            resources.push(context_resource(&path));
-        }
-        Ok(resources)
-    }
-
-    pub async fn list_resource_page(&self, cursor: Option<&str>) -> AppResult<ListResourcesResult> {
-        const PAGE_SIZE: usize = 100;
-        let resources = self.list_resource_descriptors().await?;
-        let fingerprint = resource_catalog_fingerprint(&resources);
-        let offset = parse_resource_cursor(cursor, &fingerprint, resources.len())?;
-        let end = (offset + PAGE_SIZE).min(resources.len());
-        let next_cursor = (end < resources.len()).then(|| format!("v1:{end}:{fingerprint}"));
-
-        Ok(ListResourcesResult {
-            meta: None,
-            next_cursor,
-            resources: resources[offset..end].to_vec(),
-        })
+        ]
     }
 
     pub fn list_resource_template_descriptors(&self) -> Vec<ResourceTemplate> {
@@ -187,18 +138,6 @@ impl ObsidianMcp {
                 .with_title("Obsidian note")
                 .with_description("Read a Markdown note by vault-relative path.")
                 .with_mime_type("text/markdown")
-                .no_annotation(),
-            RawResourceTemplate::new("obsidian://backlinks/{path}", "obsidian_backlinks_by_path")
-                .with_title("Obsidian backlinks")
-                .with_description("Read backlinks for a Markdown note by vault-relative path.")
-                .with_mime_type("text/plain")
-                .no_annotation(),
-            RawResourceTemplate::new("obsidian://context/{path}", "obsidian_context_by_path")
-                .with_title("Obsidian note context")
-                .with_description(
-                    "Read aliases, outline, outgoing links, and backlinks for one Markdown note.",
-                )
-                .with_mime_type("application/json")
                 .no_annotation(),
             RawResourceTemplate::new("obsidian://base/{path}", "obsidian_base_by_path")
                 .with_title("Obsidian Base query")
@@ -302,23 +241,6 @@ impl ObsidianMcp {
                 ResourceContents::text(content, ObsidianResourceUri::note(&path))
                     .with_mime_type("text/markdown")
             }
-            ObsidianResourceUri::Backlinks(path) => {
-                let backlinks = self
-                    .list_backlinks_data(&path.as_cli_arg(), true, Some(1_000))
-                    .await?;
-                ResourceContents::text(backlinks.join("\n"), ObsidianResourceUri::backlinks(&path))
-                    .with_mime_type("text/plain")
-            }
-            ObsidianResourceUri::Context(path) => {
-                let context = self
-                    .get_note_context_data(&path.as_cli_arg(), Some(1_000))
-                    .await?;
-                ResourceContents::text(
-                    serialize_resource_json(&context)?,
-                    ObsidianResourceUri::context(&path),
-                )
-                .with_mime_type("application/json")
-            }
             ObsidianResourceUri::Base(path) => {
                 let result = self
                     .query_base_data(&path.as_cli_arg(), None, Some(1_000))
@@ -356,54 +278,6 @@ impl ObsidianMcp {
 
         Ok(ReadResourceResult::new(vec![contents]))
     }
-}
-
-fn resource_catalog_fingerprint(resources: &[Resource]) -> String {
-    let mut hasher = Sha256::new();
-    for resource in resources {
-        hasher.update((resource.uri.len() as u64).to_be_bytes());
-        hasher.update(resource.uri.as_bytes());
-    }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn parse_resource_cursor(
-    cursor: Option<&str>,
-    expected_fingerprint: &str,
-    catalog_len: usize,
-) -> AppResult<usize> {
-    let Some(cursor) = cursor else {
-        return Ok(0);
-    };
-    let mut parts = cursor.split(':');
-    let version = parts.next();
-    let offset = parts.next();
-    let fingerprint = parts.next();
-    if version != Some("v1") || parts.next().is_some() {
-        return Err(ObsidianMcpError::InvalidInput(
-            "Invalid resources/list cursor".to_string(),
-        ));
-    }
-    let offset = offset
-        .and_then(|offset| offset.parse::<usize>().ok())
-        .ok_or_else(|| {
-            ObsidianMcpError::InvalidInput("Invalid resources/list cursor offset".to_string())
-        })?;
-    if fingerprint != Some(expected_fingerprint) {
-        return Err(ObsidianMcpError::InvalidInput(
-            "Stale resources/list cursor; the resource catalog changed".to_string(),
-        ));
-    }
-    if offset >= catalog_len {
-        return Err(ObsidianMcpError::InvalidInput(
-            "Invalid resources/list cursor offset".to_string(),
-        ));
-    }
-    Ok(offset)
 }
 
 fn serialize_resource_json(value: &impl rmcp::serde::Serialize) -> AppResult<String> {
@@ -487,36 +361,6 @@ fn projects_index_resource() -> Resource {
     .with_description("Markdown project notes under the configured projects directory.")
     .with_mime_type("text/plain")
     .no_annotation()
-}
-
-fn note_resource(path: &VaultRelativePath) -> Resource {
-    let uri = ObsidianResourceUri::note(path);
-    let path = path.as_cli_arg();
-    RawResource::new(uri, format!("obsidian_note:{path}"))
-        .with_title(path)
-        .with_description("Markdown note in the configured Obsidian vault.")
-        .with_mime_type("text/markdown")
-        .no_annotation()
-}
-
-fn backlinks_resource(path: &VaultRelativePath) -> Resource {
-    let uri = ObsidianResourceUri::backlinks(path);
-    let path = path.as_cli_arg();
-    RawResource::new(uri, format!("obsidian_backlinks:{path}"))
-        .with_title(format!("Backlinks for {path}"))
-        .with_description("Backlinks to this Markdown note in the configured Obsidian vault.")
-        .with_mime_type("text/plain")
-        .no_annotation()
-}
-
-fn context_resource(path: &VaultRelativePath) -> Resource {
-    let uri = ObsidianResourceUri::context(path);
-    let path = path.as_cli_arg();
-    RawResource::new(uri, format!("obsidian_context:{path}"))
-        .with_title(format!("Knowledge graph context for {path}"))
-        .with_description("Aliases, outline, outgoing links, and backlinks for this Markdown note.")
-        .with_mime_type("application/json")
-        .no_annotation()
 }
 
 fn format_vault_info_resource(info: &VaultInfoResponse) -> String {
