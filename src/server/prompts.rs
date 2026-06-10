@@ -140,7 +140,7 @@ impl ObsidianMcp {
             "summarize_note" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let uri = ObsidianResourceUri::note(&normalized_path);
+                let uri = ObsidianResourceUri::Note(normalized_path);
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -169,7 +169,7 @@ impl ObsidianMcp {
                 let path = required_prompt_string(&request, "path")?;
                 let intent = required_prompt_string(&request, "intent")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let uri = ObsidianResourceUri::note(&normalized_path);
+                let uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -196,8 +196,8 @@ impl ObsidianMcp {
             .with_description("Review today's daily note.")),
             "plan_day" => {
                 let date = DailyDate::parse(&required_prompt_string(&request, "date")?)?;
-                let daily_uri = ObsidianResourceUri::daily(&date);
-                let overdue_uri = ObsidianResourceUri::tasks_overdue(&date);
+                let daily_uri = ObsidianResourceUri::Daily(date.clone());
+                let overdue_uri = ObsidianResourceUri::TasksOverdue(date.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -224,7 +224,7 @@ impl ObsidianMcp {
             "backlink_review" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let note_uri = ObsidianResourceUri::note(&normalized_path);
+                let note_uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -246,7 +246,7 @@ impl ObsidianMcp {
                     PromptMessageRole::User,
                     format!(
                         "Use `read_daily_notes` from `{from}` to `{to}`, read `{}`, and use `list_tasks` with status `{{\"type\":\"todo\"}}`. Review commitments, overdue and unfinished tasks, recurring themes, stale items, active project risks, and a short next-week plan. Use `get_project_status` for relevant project notes. Do not modify the vault.",
-                        ObsidianResourceUri::tasks_overdue(&to)
+                        ObsidianResourceUri::TasksOverdue(to.clone())
                     ),
                 )])
                 .with_description("Review daily notes and open tasks for a date range."))
@@ -254,7 +254,7 @@ impl ObsidianMcp {
             "project_review" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let note_uri = ObsidianResourceUri::note(&normalized_path);
+                let note_uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(

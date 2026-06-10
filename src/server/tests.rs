@@ -1586,50 +1586,69 @@ async fn read_v030_work_system_resources() {
 }
 
 #[test]
-fn resource_uri_round_trips_percent_encoded_note_paths() {
-    let path = VaultRelativePath::markdown("Folder/Space Note.md").unwrap();
-    let uri = ObsidianResourceUri::note(&path);
+fn resource_uri_display_and_parse_round_trip() {
+    let note = VaultRelativePath::markdown("Folder/Space Note.md").unwrap();
+    let base = VaultRelativePath::base("Folder/Space Base.base").unwrap();
+    let date = DailyDate::parse("2026-06-05").unwrap();
+    let cases = [
+        (ObsidianResourceUri::VaultInfo, "obsidian://vault/info"),
+        (ObsidianResourceUri::VaultAudit, "obsidian://vault/audit"),
+        (ObsidianResourceUri::BasesIndex, "obsidian://bases/index"),
+        (ObsidianResourceUri::NotesIndex, "obsidian://notes/index"),
+        (ObsidianResourceUri::TagsIndex, "obsidian://tags/index"),
+        (ObsidianResourceUri::DailyToday, "obsidian://daily/today"),
+        (
+            ObsidianResourceUri::Daily(date.clone()),
+            "obsidian://daily/2026-06-05",
+        ),
+        (ObsidianResourceUri::TasksOpen, "obsidian://tasks/open"),
+        (
+            ObsidianResourceUri::TasksOverdue(date),
+            "obsidian://tasks/overdue/2026-06-05",
+        ),
+        (
+            ObsidianResourceUri::ProjectsIndex,
+            "obsidian://projects/index",
+        ),
+        (
+            ObsidianResourceUri::Note(note.clone()),
+            "obsidian://note/Folder/Space%20Note.md",
+        ),
+        (
+            ObsidianResourceUri::Base(base),
+            "obsidian://base/Folder/Space%20Base.base",
+        ),
+        (
+            ObsidianResourceUri::Project(note.clone()),
+            "obsidian://project/Folder/Space%20Note.md",
+        ),
+        (
+            ObsidianResourceUri::Properties(note),
+            "obsidian://properties/Folder/Space%20Note.md",
+        ),
+    ];
 
-    assert_eq!(uri, "obsidian://note/Folder/Space%20Note.md");
-    assert_eq!(
-        ObsidianResourceUri::parse(&uri).unwrap(),
-        ObsidianResourceUri::Note(path)
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://project/Folder/Space%20Note.md").unwrap(),
-        ObsidianResourceUri::Project(VaultRelativePath::markdown("Folder/Space Note.md").unwrap())
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://properties/Folder/Space%20Note.md").unwrap(),
-        ObsidianResourceUri::Properties(
-            VaultRelativePath::markdown("Folder/Space Note.md").unwrap()
-        )
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://vault/audit").unwrap(),
-        ObsidianResourceUri::VaultAudit
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://bases/index").unwrap(),
-        ObsidianResourceUri::BasesIndex
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://base/Folder/Space%20Base.base").unwrap(),
-        ObsidianResourceUri::Base(VaultRelativePath::base("Folder/Space Base.base").unwrap())
-    );
-    assert_eq!(
-        ObsidianResourceUri::parse("obsidian://tasks/overdue/2026-06-05").unwrap(),
-        ObsidianResourceUri::TasksOverdue(DailyDate::parse("2026-06-05").unwrap())
-    );
+    for (resource_uri, expected) in cases {
+        assert_eq!(resource_uri.to_string(), expected);
+        assert_eq!(
+            expected.parse::<ObsidianResourceUri>().unwrap(),
+            resource_uri
+        );
+    }
+
     assert!(matches!(
-        ObsidianResourceUri::parse("obsidian://backlinks/Folder/Space%20Note.md"),
+        "obsidian://backlinks/Folder/Space%20Note.md".parse::<ObsidianResourceUri>(),
         Err(ObsidianMcpError::ResourceNotFound(_))
     ));
     assert!(matches!(
-        ObsidianResourceUri::parse("obsidian://context/Folder/Space%20Note.md"),
+        "obsidian://context/Folder/Space%20Note.md".parse::<ObsidianResourceUri>(),
         Err(ObsidianMcpError::ResourceNotFound(_))
     ));
-    assert!(ObsidianResourceUri::parse("obsidian://note/bad%").is_err());
+    assert!(
+        "obsidian://note/bad%"
+            .parse::<ObsidianResourceUri>()
+            .is_err()
+    );
 }
 
 #[test]

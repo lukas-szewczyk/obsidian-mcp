@@ -1,3 +1,5 @@
+use std::{fmt, str::FromStr};
+
 use rmcp::model::{
     AnnotateAble, RawResource, RawResourceTemplate, ReadResourceResult, Resource, ResourceContents,
     ResourceTemplate,
@@ -38,8 +40,12 @@ impl ObsidianResourceUri {
     const BASE_PREFIX: &'static str = "obsidian://base/";
     const PROJECT_PREFIX: &'static str = "obsidian://project/";
     const PROPERTIES_PREFIX: &'static str = "obsidian://properties/";
+}
 
-    pub(super) fn parse(uri: &str) -> AppResult<Self> {
+impl FromStr for ObsidianResourceUri {
+    type Err = ObsidianMcpError;
+
+    fn from_str(uri: &str) -> Result<Self, Self::Err> {
         match uri {
             Self::VAULT_INFO => Ok(Self::VaultInfo),
             Self::VAULT_AUDIT => Ok(Self::VaultAudit),
@@ -76,45 +82,28 @@ impl ObsidianResourceUri {
             }
         }
     }
+}
 
-    pub(super) fn note(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::NOTE_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
-    pub(super) fn daily(date: &DailyDate) -> String {
-        format!("{}{date}", Self::DAILY_PREFIX)
-    }
-
-    pub(super) fn base(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::BASE_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
-    pub(super) fn project(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::PROJECT_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
-    pub(super) fn properties(path: &VaultRelativePath) -> String {
-        format!(
-            "{}{}",
-            Self::PROPERTIES_PREFIX,
-            percent_encode_uri_path(&path.as_cli_arg())
-        )
-    }
-
-    pub(super) fn tasks_overdue(date: &DailyDate) -> String {
-        format!("{}{date}", Self::TASKS_OVERDUE_PREFIX)
+impl fmt::Display for ObsidianResourceUri {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VaultInfo => formatter.write_str(Self::VAULT_INFO),
+            Self::VaultAudit => formatter.write_str(Self::VAULT_AUDIT),
+            Self::BasesIndex => formatter.write_str(Self::BASES_INDEX),
+            Self::NotesIndex => formatter.write_str(Self::NOTES_INDEX),
+            Self::TagsIndex => formatter.write_str(Self::TAGS_INDEX),
+            Self::DailyToday => formatter.write_str(Self::DAILY_TODAY),
+            Self::Daily(date) => write!(formatter, "{}{date}", Self::DAILY_PREFIX),
+            Self::TasksOpen => formatter.write_str(Self::TASKS_OPEN),
+            Self::TasksOverdue(date) => {
+                write!(formatter, "{}{date}", Self::TASKS_OVERDUE_PREFIX)
+            }
+            Self::ProjectsIndex => formatter.write_str(Self::PROJECTS_INDEX),
+            Self::Note(path) => write_resource_path(formatter, Self::NOTE_PREFIX, path),
+            Self::Base(path) => write_resource_path(formatter, Self::BASE_PREFIX, path),
+            Self::Project(path) => write_resource_path(formatter, Self::PROJECT_PREFIX, path),
+            Self::Properties(path) => write_resource_path(formatter, Self::PROPERTIES_PREFIX, path),
+        }
     }
 }
 
@@ -179,45 +168,50 @@ impl ObsidianMcp {
     }
 
     pub async fn read_resource_uri(&self, uri: &str) -> AppResult<ReadResourceResult> {
-        let resource_uri = ObsidianResourceUri::parse(uri)?;
+        let resource_uri = uri.parse::<ObsidianResourceUri>()?;
+        let normalized_uri = resource_uri.to_string();
         let contents = match resource_uri {
             ObsidianResourceUri::VaultInfo => {
                 let info = self.vault_info_data().await?;
-                ResourceContents::text(format_vault_info_resource(&info), uri)
-                    .with_mime_type("text/plain")
+                text_resource(
+                    format_vault_info_resource(&info),
+                    normalized_uri,
+                    "text/plain",
+                )
             }
             ObsidianResourceUri::VaultAudit => {
                 let audit = self.audit_vault_data(Some(1_000)).await?;
-                ResourceContents::text(serialize_resource_json(&audit)?, uri)
-                    .with_mime_type("application/json")
+                text_resource(
+                    serialize_resource_json(&audit)?,
+                    normalized_uri,
+                    "application/json",
+                )
             }
             ObsidianResourceUri::BasesIndex => {
                 let bases = self.list_bases_data(Some(1_000)).await?;
-                ResourceContents::text(bases.join("\n"), uri).with_mime_type("text/plain")
+                text_resource(bases.join("\n"), normalized_uri, "text/plain")
             }
             ObsidianResourceUri::NotesIndex => {
                 let notes = self.discover_note_paths(None).await?;
-                ResourceContents::text(notes.join("\n"), uri).with_mime_type("text/plain")
+                text_resource(notes.join("\n"), normalized_uri, "text/plain")
             }
             ObsidianResourceUri::TagsIndex => {
                 let tags = self.list_tags_data(None, true, true, Some(2_000)).await?;
-                ResourceContents::text(tags.join("\n"), uri).with_mime_type("text/plain")
+                text_resource(tags.join("\n"), normalized_uri, "text/plain")
             }
             ObsidianResourceUri::DailyToday => {
                 let content = self.read_daily_note_content().await?;
-                ResourceContents::text(content, uri).with_mime_type("text/markdown")
+                text_resource(content, normalized_uri, "text/markdown")
             }
             ObsidianResourceUri::Daily(date) => {
                 let content = self.read_daily_note_for_date(&date).await?;
-                ResourceContents::text(content, ObsidianResourceUri::daily(&date))
-                    .with_mime_type("text/markdown")
+                text_resource(content, normalized_uri, "text/markdown")
             }
             ObsidianResourceUri::TasksOpen => {
                 let tasks = self
                     .list_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo), Some(1_000))
                     .await?;
-                ResourceContents::text(format_tasks_resource(&tasks), uri)
-                    .with_mime_type("text/plain")
+                text_resource(format_tasks_resource(&tasks), normalized_uri, "text/plain")
             }
             ObsidianResourceUri::TasksOverdue(date) => {
                 let tasks = self
@@ -229,37 +223,39 @@ impl ObsidianMcp {
                     count: tasks.len(),
                     tasks,
                 };
-                ResourceContents::text(serialize_resource_json(&response)?, uri)
-                    .with_mime_type("application/json")
+                text_resource(
+                    serialize_resource_json(&response)?,
+                    normalized_uri,
+                    "application/json",
+                )
             }
             ObsidianResourceUri::ProjectsIndex => {
                 let (_, projects) = self.list_project_note_paths(None, Some(1_000)).await?;
-                ResourceContents::text(projects.join("\n"), uri).with_mime_type("text/plain")
+                text_resource(projects.join("\n"), normalized_uri, "text/plain")
             }
             ObsidianResourceUri::Note(path) => {
                 let content = self.read_note_content_at(&path).await?;
-                ResourceContents::text(content, ObsidianResourceUri::note(&path))
-                    .with_mime_type("text/markdown")
+                text_resource(content, normalized_uri, "text/markdown")
             }
             ObsidianResourceUri::Base(path) => {
                 let result = self
                     .query_base_data(&path.as_cli_arg(), None, Some(1_000))
                     .await?;
-                ResourceContents::text(
+                text_resource(
                     serialize_resource_json(&result)?,
-                    ObsidianResourceUri::base(&path),
+                    normalized_uri,
+                    "application/json",
                 )
-                .with_mime_type("application/json")
             }
             ObsidianResourceUri::Project(path) => {
                 let status = self
                     .get_project_status_data(&path.as_cli_arg(), Some(500))
                     .await?;
-                ResourceContents::text(
+                text_resource(
                     serialize_resource_json(&status)?,
-                    ObsidianResourceUri::project(&path),
+                    normalized_uri,
+                    "application/json",
                 )
-                .with_mime_type("application/json")
             }
             ObsidianResourceUri::Properties(path) => {
                 let properties = self.list_properties_data(&path.as_cli_arg()).await?;
@@ -268,11 +264,11 @@ impl ObsidianMcp {
                     count: properties.len(),
                     properties,
                 };
-                ResourceContents::text(
+                text_resource(
                     serialize_resource_json(&response)?,
-                    ObsidianResourceUri::properties(&path),
+                    normalized_uri,
+                    "application/json",
                 )
-                .with_mime_type("application/json")
             }
         };
 
@@ -284,6 +280,10 @@ fn serialize_resource_json(value: &impl rmcp::serde::Serialize) -> AppResult<Str
     rmcp::serde_json::to_string_pretty(value).map_err(|error| {
         ObsidianMcpError::Parse(format!("Cannot serialize Obsidian resource: {error}"))
     })
+}
+
+fn text_resource(text: String, uri: String, mime_type: &str) -> ResourceContents {
+    ResourceContents::text(text, uri).with_mime_type(mime_type)
 }
 
 fn format_tasks_resource(tasks: &[TaskItem]) -> String {
@@ -361,6 +361,18 @@ fn projects_index_resource() -> Resource {
     .with_description("Markdown project notes under the configured projects directory.")
     .with_mime_type("text/plain")
     .no_annotation()
+}
+
+fn write_resource_path(
+    formatter: &mut fmt::Formatter<'_>,
+    prefix: &str,
+    path: &VaultRelativePath,
+) -> fmt::Result {
+    write!(
+        formatter,
+        "{prefix}{}",
+        percent_encode_uri_path(&path.as_cli_arg())
+    )
 }
 
 fn format_vault_info_resource(info: &VaultInfoResponse) -> String {
