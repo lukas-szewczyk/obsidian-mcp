@@ -9,7 +9,6 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ObsidianResourceUri {
-    VaultInfo,
     VaultAudit,
     BasesIndex,
     NotesIndex,
@@ -26,7 +25,6 @@ pub(super) enum ObsidianResourceUri {
 }
 
 impl ObsidianResourceUri {
-    const VAULT_INFO: &'static str = "obsidian://vault/info";
     const VAULT_AUDIT: &'static str = "obsidian://vault/audit";
     const BASES_INDEX: &'static str = "obsidian://bases/index";
     const NOTES_INDEX: &'static str = "obsidian://notes/index";
@@ -47,7 +45,6 @@ impl FromStr for ObsidianResourceUri {
 
     fn from_str(uri: &str) -> Result<Self, Self::Err> {
         match uri {
-            Self::VAULT_INFO => Ok(Self::VaultInfo),
             Self::VAULT_AUDIT => Ok(Self::VaultAudit),
             Self::BASES_INDEX => Ok(Self::BasesIndex),
             Self::NOTES_INDEX => Ok(Self::NotesIndex),
@@ -87,7 +84,6 @@ impl FromStr for ObsidianResourceUri {
 impl fmt::Display for ObsidianResourceUri {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::VaultInfo => formatter.write_str(Self::VAULT_INFO),
             Self::VaultAudit => formatter.write_str(Self::VAULT_AUDIT),
             Self::BasesIndex => formatter.write_str(Self::BASES_INDEX),
             Self::NotesIndex => formatter.write_str(Self::NOTES_INDEX),
@@ -110,7 +106,6 @@ impl fmt::Display for ObsidianResourceUri {
 impl ObsidianMcp {
     pub fn list_resource_descriptors(&self) -> Vec<Resource> {
         vec![
-            vault_info_resource(),
             vault_audit_resource(),
             bases_index_resource(),
             notes_index_resource(),
@@ -171,14 +166,6 @@ impl ObsidianMcp {
         let resource_uri = uri.parse::<ObsidianResourceUri>()?;
         let normalized_uri = resource_uri.to_string();
         let contents = match resource_uri {
-            ObsidianResourceUri::VaultInfo => {
-                let info = self.vault_info_data().await?;
-                text_resource(
-                    format_vault_info_resource(&info),
-                    normalized_uri,
-                    "text/plain",
-                )
-            }
             ObsidianResourceUri::VaultAudit => {
                 let audit = self.audit_vault_data(Some(1_000)).await?;
                 text_resource(
@@ -294,16 +281,6 @@ fn format_tasks_resource(tasks: &[TaskItem]) -> String {
         .join("\n")
 }
 
-fn vault_info_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::VAULT_INFO, "obsidian_vault_info")
-        .with_title("Obsidian vault info")
-        .with_description(
-            "Configured vault path, Obsidian-reported vault identity, and note count.",
-        )
-        .with_mime_type("text/plain")
-        .no_annotation()
-}
-
 fn vault_audit_resource() -> Resource {
     RawResource::new(ObsidianResourceUri::VAULT_AUDIT, "obsidian_vault_audit")
         .with_title("Obsidian vault graph audit")
@@ -372,16 +349,6 @@ fn write_resource_path(
         formatter,
         "{prefix}{}",
         percent_encode_uri_path(&path.as_cli_arg())
-    )
-}
-
-fn format_vault_info_resource(info: &VaultInfoResponse) -> String {
-    format!(
-        "configured_vault_path\t{}\nobsidian_vault_path\t{}\nobsidian_vault_name\t{}\nmarkdown_notes\t{}",
-        info.configured_vault_path,
-        info.obsidian_vault_path,
-        info.obsidian_vault_name,
-        info.markdown_notes
     )
 }
 
