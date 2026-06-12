@@ -227,6 +227,57 @@ pub struct VaultInfoResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileServer {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileVault {
+    pub name: String,
+    pub path: String,
+    pub files: usize,
+    pub folders: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileSync {
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileConventions {
+    pub projects_dir: String,
+    pub daily_path_format: String,
+    pub task_date_syntax: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileCapabilities {
+    pub projects: bool,
+    pub daily: bool,
+    pub bases: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileSystem {
+    pub obsidian_version: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct WorkspaceProfileResponse {
+    pub contract: String,
+    pub server: ProfileServer,
+    pub vault: ProfileVault,
+    pub sync: ProfileSync,
+    pub conventions: ProfileConventions,
+    pub bases: Vec<String>,
+    pub capabilities: ProfileCapabilities,
+    pub system: ProfileSystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct ListNotesResponse {
     pub directory: Option<String>,
     pub notes: Vec<String>,

@@ -5,9 +5,7 @@ mod prompts;
 mod resources;
 mod tools;
 mod work_system;
-
-#[cfg(test)]
-mod tests;
+mod workspace;
 
 use std::{
     env,

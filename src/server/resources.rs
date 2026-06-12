@@ -9,6 +9,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ObsidianResourceUri {
+    WorkspaceProfile,
+    Activity,
     VaultAudit,
     BasesIndex,
     NotesIndex,
@@ -25,6 +27,8 @@ pub(super) enum ObsidianResourceUri {
 }
 
 impl ObsidianResourceUri {
+    const WORKSPACE_PROFILE: &'static str = "workos://workspace/profile";
+    const ACTIVITY: &'static str = "workos://workspace/activity";
     const VAULT_AUDIT: &'static str = "obsidian://vault/audit";
     const BASES_INDEX: &'static str = "obsidian://bases/index";
     const NOTES_INDEX: &'static str = "obsidian://notes/index";
@@ -45,6 +49,8 @@ impl FromStr for ObsidianResourceUri {
 
     fn from_str(uri: &str) -> Result<Self, Self::Err> {
         match uri {
+            Self::WORKSPACE_PROFILE => Ok(Self::WorkspaceProfile),
+            Self::ACTIVITY => Ok(Self::Activity),
             Self::VAULT_AUDIT => Ok(Self::VaultAudit),
             Self::BASES_INDEX => Ok(Self::BasesIndex),
             Self::NOTES_INDEX => Ok(Self::NotesIndex),
@@ -84,6 +90,8 @@ impl FromStr for ObsidianResourceUri {
 impl fmt::Display for ObsidianResourceUri {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WorkspaceProfile => formatter.write_str(Self::WORKSPACE_PROFILE),
+            Self::Activity => formatter.write_str(Self::ACTIVITY),
             Self::VaultAudit => formatter.write_str(Self::VAULT_AUDIT),
             Self::BasesIndex => formatter.write_str(Self::BASES_INDEX),
             Self::NotesIndex => formatter.write_str(Self::NOTES_INDEX),
@@ -106,6 +114,8 @@ impl fmt::Display for ObsidianResourceUri {
 impl ObsidianMcp {
     pub fn list_resource_descriptors(&self) -> Vec<Resource> {
         vec![
+            workspace_profile_resource(),
+            workspace_activity(),
             vault_audit_resource(),
             bases_index_resource(),
             notes_index_resource(),
@@ -166,6 +176,18 @@ impl ObsidianMcp {
         let resource_uri = uri.parse::<ObsidianResourceUri>()?;
         let normalized_uri = resource_uri.to_string();
         let contents = match resource_uri {
+            ObsidianResourceUri::WorkspaceProfile => {
+                let profile = self.workspace_profile_data().await?;
+                text_resource(
+                    serialize_resource_json(&profile)?,
+                    normalized_uri,
+                    "application/json",
+                )
+            }
+            ObsidianResourceUri::Activity => {
+                text_resource("text".to_string(), normalized_uri, "application/json")
+            }
+
             ObsidianResourceUri::VaultAudit => {
                 let audit = self.audit_vault_data(Some(1_000)).await?;
                 text_resource(
@@ -279,6 +301,27 @@ fn format_tasks_resource(tasks: &[TaskItem]) -> String {
         .map(|task| format!("{}:{}\t{}", task.path, task.line, task.text))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn workspace_profile_resource() -> Resource {
+    RawResource::new(
+        ObsidianResourceUri::WORKSPACE_PROFILE,
+        "workos_workspace_profile",
+    )
+    .with_title("WorkOS workspace profile")
+    .with_description(
+        "Workspace configuration, vault status, conventions, bases, and capabilities.",
+    )
+    .with_mime_type("application/json")
+    .no_annotation()
+}
+
+pub fn workspace_activity() -> Resource {
+    RawResource::new(ObsidianResourceUri::ACTIVITY, "obsidian_vault_audit")
+        .with_title("Obsidian vault graph audit")
+        .with_description("Unresolved links, orphan notes, and dead ends in the Markdown vault.")
+        .with_mime_type("application/json")
+        .no_annotation()
 }
 
 fn vault_audit_resource() -> Resource {
