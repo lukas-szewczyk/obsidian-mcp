@@ -304,7 +304,14 @@ async fn index_and_audit_resources_render() {
 
     let projects = read_json(&server, "workos://projects/index").await;
     assert_eq!(projects["contract"], "workos.v1");
-    assert!(projects["projects"].is_array());
+    assert!(
+        projects["projects"]
+            .as_array()
+            .is_some_and(|projects| projects.iter().any(|project| {
+                project["path"] == "Projects/WorkOS MCP.md" && project["title"] == "WorkOS MCP"
+            })),
+        "seeded project must be indexed: {projects}"
+    );
 
     let audit = read_json(&server, "workos://vault/audit").await;
     assert_eq!(audit["contract"], "workos.v1");
@@ -312,6 +319,31 @@ async fn index_and_audit_resources_render() {
     assert!(audit["orphans"].is_array());
     assert!(audit["deadends"].is_array());
     assert_eq!(audit["truncated"], false);
+}
+
+#[tokio::test]
+async fn base_template_queries_project_properties() {
+    let Some(server) = connected_server().await else {
+        return;
+    };
+
+    let base = read_json(&server, "workos://base/Projects.base").await;
+    assert_eq!(base["contract"], "workos.v1");
+    assert_eq!(base["path"], "Projects.base");
+    assert_eq!(base["truncated"], false);
+    let results = base["results"]
+        .as_array()
+        .expect("results must be an array");
+    assert_eq!(
+        base["count"].as_u64().unwrap_or_default(),
+        results.len() as u64
+    );
+    assert!(
+        results
+            .iter()
+            .any(|row| row["path"] == "Projects/WorkOS MCP.md" && row["status"] == "active"),
+        "base view must expose project properties: {base}"
+    );
 }
 
 #[tokio::test]
