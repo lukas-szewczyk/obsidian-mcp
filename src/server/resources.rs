@@ -5,43 +5,45 @@ use rmcp::model::{
     ResourceTemplate,
 };
 
-use super::*;
+use super::{workspace::DueDateFilter, *};
+
+const NOTES_INDEX_LIMIT: usize = 5_000;
+const TAGS_INDEX_LIMIT: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ObsidianResourceUri {
     WorkspaceProfile,
-    Activity,
-    VaultAudit,
-    BasesIndex,
+    Today,
+    TasksOpen,
+    ProjectsIndex,
     NotesIndex,
     TagsIndex,
-    DailyToday,
-    Daily(DailyDate),
-    TasksOpen,
-    TasksOverdue(DailyDate),
-    ProjectsIndex,
+    VaultAudit,
     Note(VaultRelativePath),
+    NoteContext(VaultRelativePath),
+    Daily(DailyDate),
     Base(VaultRelativePath),
-    Project(VaultRelativePath),
-    Properties(VaultRelativePath),
+    TasksDueOn(DailyDate),
+    TasksDueBefore(DailyDate),
+    ProjectStatus(VaultRelativePath),
 }
 
 impl ObsidianResourceUri {
     const WORKSPACE_PROFILE: &'static str = "workos://workspace/profile";
-    const ACTIVITY: &'static str = "workos://workspace/activity";
-    const VAULT_AUDIT: &'static str = "obsidian://vault/audit";
-    const BASES_INDEX: &'static str = "obsidian://bases/index";
-    const NOTES_INDEX: &'static str = "obsidian://notes/index";
-    const TAGS_INDEX: &'static str = "obsidian://tags/index";
-    const DAILY_TODAY: &'static str = "obsidian://daily/today";
-    const DAILY_PREFIX: &'static str = "obsidian://daily/";
-    const TASKS_OPEN: &'static str = "obsidian://tasks/open";
-    const TASKS_OVERDUE_PREFIX: &'static str = "obsidian://tasks/overdue/";
-    const PROJECTS_INDEX: &'static str = "obsidian://projects/index";
-    const NOTE_PREFIX: &'static str = "obsidian://note/";
-    const BASE_PREFIX: &'static str = "obsidian://base/";
-    const PROJECT_PREFIX: &'static str = "obsidian://project/";
-    const PROPERTIES_PREFIX: &'static str = "obsidian://properties/";
+    const TODAY: &'static str = "workos://workspace/today";
+    const TASKS_OPEN: &'static str = "workos://tasks/open";
+    const PROJECTS_INDEX: &'static str = "workos://projects/index";
+    const NOTES_INDEX: &'static str = "workos://notes/index";
+    const TAGS_INDEX: &'static str = "workos://tags/index";
+    const VAULT_AUDIT: &'static str = "workos://vault/audit";
+    const NOTE_PREFIX: &'static str = "workos://note/";
+    const NOTE_CONTEXT_SUFFIX: &'static str = "/context";
+    const DAILY_PREFIX: &'static str = "workos://daily/";
+    const BASE_PREFIX: &'static str = "workos://base/";
+    const TASKS_DUE_ON_PREFIX: &'static str = "workos://tasks/due-on/";
+    const TASKS_DUE_BEFORE_PREFIX: &'static str = "workos://tasks/due-before/";
+    const PROJECT_PREFIX: &'static str = "workos://project/";
+    const PROJECT_STATUS_SUFFIX: &'static str = "/status";
 }
 
 impl FromStr for ObsidianResourceUri {
@@ -50,36 +52,48 @@ impl FromStr for ObsidianResourceUri {
     fn from_str(uri: &str) -> Result<Self, Self::Err> {
         match uri {
             Self::WORKSPACE_PROFILE => Ok(Self::WorkspaceProfile),
-            Self::ACTIVITY => Ok(Self::Activity),
-            Self::VAULT_AUDIT => Ok(Self::VaultAudit),
-            Self::BASES_INDEX => Ok(Self::BasesIndex),
-            Self::NOTES_INDEX => Ok(Self::NotesIndex),
-            Self::TAGS_INDEX => Ok(Self::TagsIndex),
-            Self::DAILY_TODAY => Ok(Self::DailyToday),
+            Self::TODAY => Ok(Self::Today),
             Self::TASKS_OPEN => Ok(Self::TasksOpen),
             Self::PROJECTS_INDEX => Ok(Self::ProjectsIndex),
+            Self::NOTES_INDEX => Ok(Self::NotesIndex),
+            Self::TAGS_INDEX => Ok(Self::TagsIndex),
+            Self::VAULT_AUDIT => Ok(Self::VaultAudit),
             _ => {
                 if let Some(encoded_path) = uri.strip_prefix(Self::NOTE_PREFIX) {
-                    let decoded_path = percent_decode_uri_path(encoded_path)?;
-                    Ok(Self::Note(VaultRelativePath::markdown(&decoded_path)?))
+                    if let Some(encoded_path) = encoded_path.strip_suffix(Self::NOTE_CONTEXT_SUFFIX)
+                    {
+                        let decoded_path = percent_decode_uri_path(encoded_path)?;
+                        Ok(Self::NoteContext(VaultRelativePath::markdown(
+                            &decoded_path,
+                        )?))
+                    } else {
+                        let decoded_path = percent_decode_uri_path(encoded_path)?;
+                        Ok(Self::Note(VaultRelativePath::markdown(&decoded_path)?))
+                    }
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::BASE_PREFIX) {
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
                     Ok(Self::Base(VaultRelativePath::base(&decoded_path)?))
                 } else if let Some(encoded_path) = uri.strip_prefix(Self::PROJECT_PREFIX) {
+                    let encoded_path = encoded_path
+                        .strip_suffix(Self::PROJECT_STATUS_SUFFIX)
+                        .ok_or_else(|| {
+                            ObsidianMcpError::ResourceNotFound(format!(
+                                "Project resources require the /status facet: {uri}"
+                            ))
+                        })?;
                     let decoded_path = percent_decode_uri_path(encoded_path)?;
-                    Ok(Self::Project(VaultRelativePath::markdown(&decoded_path)?))
-                } else if let Some(encoded_path) = uri.strip_prefix(Self::PROPERTIES_PREFIX) {
-                    let decoded_path = percent_decode_uri_path(encoded_path)?;
-                    Ok(Self::Properties(VaultRelativePath::markdown(
+                    Ok(Self::ProjectStatus(VaultRelativePath::markdown(
                         &decoded_path,
                     )?))
-                } else if let Some(date) = uri.strip_prefix(Self::TASKS_OVERDUE_PREFIX) {
-                    Ok(Self::TasksOverdue(DailyDate::parse(date)?))
+                } else if let Some(date) = uri.strip_prefix(Self::TASKS_DUE_ON_PREFIX) {
+                    Ok(Self::TasksDueOn(DailyDate::parse(date)?))
+                } else if let Some(date) = uri.strip_prefix(Self::TASKS_DUE_BEFORE_PREFIX) {
+                    Ok(Self::TasksDueBefore(DailyDate::parse(date)?))
                 } else if let Some(date) = uri.strip_prefix(Self::DAILY_PREFIX) {
                     Ok(Self::Daily(DailyDate::parse(date)?))
                 } else {
                     Err(ObsidianMcpError::ResourceNotFound(format!(
-                        "Unsupported Obsidian resource URI: {uri}"
+                        "Unsupported WorkOS resource URI: {uri}"
                     )))
                 }
             }
@@ -91,22 +105,33 @@ impl fmt::Display for ObsidianResourceUri {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WorkspaceProfile => formatter.write_str(Self::WORKSPACE_PROFILE),
-            Self::Activity => formatter.write_str(Self::ACTIVITY),
-            Self::VaultAudit => formatter.write_str(Self::VAULT_AUDIT),
-            Self::BasesIndex => formatter.write_str(Self::BASES_INDEX),
+            Self::Today => formatter.write_str(Self::TODAY),
+            Self::TasksOpen => formatter.write_str(Self::TASKS_OPEN),
+            Self::ProjectsIndex => formatter.write_str(Self::PROJECTS_INDEX),
             Self::NotesIndex => formatter.write_str(Self::NOTES_INDEX),
             Self::TagsIndex => formatter.write_str(Self::TAGS_INDEX),
-            Self::DailyToday => formatter.write_str(Self::DAILY_TODAY),
+            Self::VaultAudit => formatter.write_str(Self::VAULT_AUDIT),
+            Self::Note(path) => write_resource_path(formatter, Self::NOTE_PREFIX, path, ""),
+            Self::NoteContext(path) => write_resource_path(
+                formatter,
+                Self::NOTE_PREFIX,
+                path,
+                Self::NOTE_CONTEXT_SUFFIX,
+            ),
             Self::Daily(date) => write!(formatter, "{}{date}", Self::DAILY_PREFIX),
-            Self::TasksOpen => formatter.write_str(Self::TASKS_OPEN),
-            Self::TasksOverdue(date) => {
-                write!(formatter, "{}{date}", Self::TASKS_OVERDUE_PREFIX)
+            Self::Base(path) => write_resource_path(formatter, Self::BASE_PREFIX, path, ""),
+            Self::TasksDueOn(date) => {
+                write!(formatter, "{}{date}", Self::TASKS_DUE_ON_PREFIX)
             }
-            Self::ProjectsIndex => formatter.write_str(Self::PROJECTS_INDEX),
-            Self::Note(path) => write_resource_path(formatter, Self::NOTE_PREFIX, path),
-            Self::Base(path) => write_resource_path(formatter, Self::BASE_PREFIX, path),
-            Self::Project(path) => write_resource_path(formatter, Self::PROJECT_PREFIX, path),
-            Self::Properties(path) => write_resource_path(formatter, Self::PROPERTIES_PREFIX, path),
+            Self::TasksDueBefore(date) => {
+                write!(formatter, "{}{date}", Self::TASKS_DUE_BEFORE_PREFIX)
+            }
+            Self::ProjectStatus(path) => write_resource_path(
+                formatter,
+                Self::PROJECT_PREFIX,
+                path,
+                Self::PROJECT_STATUS_SUFFIX,
+            ),
         }
     }
 }
@@ -115,60 +140,61 @@ impl ObsidianMcp {
     pub fn list_resource_descriptors(&self) -> Vec<Resource> {
         vec![
             workspace_profile_resource(),
-            workspace_activity(),
-            vault_audit_resource(),
-            bases_index_resource(),
-            notes_index_resource(),
-            tags_index_resource(),
-            daily_today_resource(),
+            workspace_today_resource(),
             tasks_open_resource(),
             projects_index_resource(),
+            notes_index_resource(),
+            tags_index_resource(),
+            vault_audit_resource(),
         ]
     }
 
     pub fn list_resource_template_descriptors(&self) -> Vec<ResourceTemplate> {
         vec![
-            RawResourceTemplate::new("obsidian://note/{path}", "obsidian_note_by_path")
-                .with_title("Obsidian note")
-                .with_description("Read a Markdown note by vault-relative path.")
+            RawResourceTemplate::new("workos://note/{path}", "workos_note")
+                .with_title("Note")
+                .with_description("Raw Markdown note by vault-relative path.")
                 .with_mime_type("text/markdown")
                 .no_annotation(),
-            RawResourceTemplate::new("obsidian://base/{path}", "obsidian_base_by_path")
-                .with_title("Obsidian Base query")
+            RawResourceTemplate::new("workos://note/{path}/context", "workos_note_context")
+                .with_title("Note context")
                 .with_description(
-                    "Query the default view of an Obsidian Base by vault-relative path.",
+                    "Full structured context for one note: content, properties, tags, tasks, links, and backlinks.",
                 )
                 .with_mime_type("application/json")
                 .no_annotation(),
-            RawResourceTemplate::new("obsidian://daily/{date}", "obsidian_daily_by_date")
-                .with_title("Obsidian daily note")
-                .with_description("Read a daily note by YYYY-MM-DD date.")
+            RawResourceTemplate::new("workos://daily/{date}", "workos_daily")
+                .with_title("Daily note")
+                .with_description("Raw daily note for a YYYY-MM-DD date.")
                 .with_mime_type("text/markdown")
                 .no_annotation(),
+            RawResourceTemplate::new("workos://base/{path}", "workos_base")
+                .with_title("Base query")
+                .with_description(
+                    "Query the default view of an Obsidian Base; the batch mechanism for property queries.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
+            RawResourceTemplate::new("workos://tasks/due-on/{date}", "workos_tasks_due_on")
+                .with_title("Tasks due on date")
+                .with_description("Open tasks due exactly on a YYYY-MM-DD date.")
+                .with_mime_type("application/json")
+                .no_annotation(),
             RawResourceTemplate::new(
-                "obsidian://tasks/overdue/{date}",
-                "obsidian_overdue_tasks_by_date",
+                "workos://tasks/due-before/{date}",
+                "workos_tasks_due_before",
             )
-            .with_title("Overdue Obsidian tasks")
-            .with_description("Read incomplete tasks due before a YYYY-MM-DD date.")
+            .with_title("Tasks due before date")
+            .with_description("Open tasks due strictly before a YYYY-MM-DD date (overdue as-of).")
             .with_mime_type("application/json")
             .no_annotation(),
-            RawResourceTemplate::new(
-                "obsidian://project/{path}",
-                "obsidian_project_status_by_path",
-            )
-            .with_title("Obsidian project status")
-            .with_description("Read a project note with properties, tasks, and backlinks.")
-            .with_mime_type("application/json")
-            .no_annotation(),
-            RawResourceTemplate::new(
-                "obsidian://properties/{path}",
-                "obsidian_note_properties_by_path",
-            )
-            .with_title("Obsidian note properties")
-            .with_description("Read structured frontmatter properties for one Markdown note.")
-            .with_mime_type("application/json")
-            .no_annotation(),
+            RawResourceTemplate::new("workos://project/{path}/status", "workos_project_status")
+                .with_title("Project status")
+                .with_description(
+                    "Compact project status: properties, open tasks, and backlink count.",
+                )
+                .with_mime_type("application/json")
+                .no_annotation(),
         ]
     }
 
@@ -178,106 +204,82 @@ impl ObsidianMcp {
         let contents = match resource_uri {
             ObsidianResourceUri::WorkspaceProfile => {
                 let profile = self.workspace_profile_data().await?;
-                text_resource(
-                    serialize_resource_json(&profile)?,
-                    normalized_uri,
-                    "application/json",
-                )
+                json_resource(&profile, normalized_uri)?
             }
-            ObsidianResourceUri::Activity => {
-                text_resource("text".to_string(), normalized_uri, "application/json")
+            ObsidianResourceUri::Today => {
+                let today = self.workspace_today_data().await?;
+                json_resource(&today, normalized_uri)?
             }
-
-            ObsidianResourceUri::VaultAudit => {
-                let audit = self.audit_vault_data(Some(1_000)).await?;
-                text_resource(
-                    serialize_resource_json(&audit)?,
-                    normalized_uri,
-                    "application/json",
-                )
+            ObsidianResourceUri::TasksOpen => {
+                let tasks = self.open_tasks_resource_data().await?;
+                json_resource(&tasks, normalized_uri)?
             }
-            ObsidianResourceUri::BasesIndex => {
-                let bases = self.list_bases_data(Some(1_000)).await?;
-                text_resource(bases.join("\n"), normalized_uri, "text/plain")
+            ObsidianResourceUri::ProjectsIndex => {
+                let projects = self.projects_index_resource_data().await?;
+                json_resource(&projects, normalized_uri)?
             }
             ObsidianResourceUri::NotesIndex => {
                 let notes = self.discover_note_paths(None).await?;
-                text_resource(notes.join("\n"), normalized_uri, "text/plain")
-            }
-            ObsidianResourceUri::TagsIndex => {
-                let tags = self.list_tags_data(None, true, true, Some(2_000)).await?;
-                text_resource(tags.join("\n"), normalized_uri, "text/plain")
-            }
-            ObsidianResourceUri::DailyToday => {
-                let content = self.read_daily_note_content().await?;
-                text_resource(content, normalized_uri, "text/markdown")
-            }
-            ObsidianResourceUri::Daily(date) => {
-                let content = self.read_daily_note_for_date(&date).await?;
-                text_resource(content, normalized_uri, "text/markdown")
-            }
-            ObsidianResourceUri::TasksOpen => {
-                let tasks = self
-                    .list_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo), Some(1_000))
-                    .await?;
-                text_resource(format_tasks_resource(&tasks), normalized_uri, "text/plain")
-            }
-            ObsidianResourceUri::TasksOverdue(date) => {
-                let tasks = self
-                    .list_overdue_tasks_data(&date.to_string(), &TaskReadTarget::Vault, Some(1_000))
-                    .await?;
-                let response = ListOverdueTasksResponse {
-                    as_of: date.to_string(),
-                    target: TaskReadTarget::Vault,
-                    count: tasks.len(),
-                    tasks,
-                };
                 text_resource(
-                    serialize_resource_json(&response)?,
+                    plain_index(notes, NOTES_INDEX_LIMIT),
                     normalized_uri,
-                    "application/json",
+                    "text/plain",
                 )
             }
-            ObsidianResourceUri::ProjectsIndex => {
-                let (_, projects) = self.list_project_note_paths(None, Some(1_000)).await?;
-                text_resource(projects.join("\n"), normalized_uri, "text/plain")
+            ObsidianResourceUri::TagsIndex => {
+                let tags = self
+                    .list_tags_data(None, true, true, Some(TAGS_INDEX_LIMIT))
+                    .await?
+                    .into_iter()
+                    .map(|line| {
+                        if line.starts_with('#') {
+                            line
+                        } else {
+                            format!("#{line}")
+                        }
+                    })
+                    .collect();
+                text_resource(
+                    plain_index(tags, TAGS_INDEX_LIMIT),
+                    normalized_uri,
+                    "text/plain",
+                )
+            }
+            ObsidianResourceUri::VaultAudit => {
+                let audit = self.vault_audit_resource_data().await?;
+                json_resource(&audit, normalized_uri)?
             }
             ObsidianResourceUri::Note(path) => {
                 let content = self.read_note_content_at(&path).await?;
                 text_resource(content, normalized_uri, "text/markdown")
             }
+            ObsidianResourceUri::NoteContext(path) => {
+                let context = self.note_context_resource_data(&path).await?;
+                json_resource(&context, normalized_uri)?
+            }
+            ObsidianResourceUri::Daily(date) => {
+                let content = self.read_daily_note_for_date(&date).await?;
+                text_resource(content, normalized_uri, "text/markdown")
+            }
             ObsidianResourceUri::Base(path) => {
-                let result = self
-                    .query_base_data(&path.as_cli_arg(), None, Some(1_000))
-                    .await?;
-                text_resource(
-                    serialize_resource_json(&result)?,
-                    normalized_uri,
-                    "application/json",
-                )
+                let result = self.base_query_resource_data(&path).await?;
+                json_resource(&result, normalized_uri)?
             }
-            ObsidianResourceUri::Project(path) => {
-                let status = self
-                    .get_project_status_data(&path.as_cli_arg(), Some(500))
+            ObsidianResourceUri::TasksDueOn(date) => {
+                let tasks = self
+                    .dated_tasks_resource_data(DueDateFilter::On, &date)
                     .await?;
-                text_resource(
-                    serialize_resource_json(&status)?,
-                    normalized_uri,
-                    "application/json",
-                )
+                json_resource(&tasks, normalized_uri)?
             }
-            ObsidianResourceUri::Properties(path) => {
-                let properties = self.list_properties_data(&path.as_cli_arg()).await?;
-                let response = ListPropertiesResponse {
-                    path: path.as_cli_arg(),
-                    count: properties.len(),
-                    properties,
-                };
-                text_resource(
-                    serialize_resource_json(&response)?,
-                    normalized_uri,
-                    "application/json",
-                )
+            ObsidianResourceUri::TasksDueBefore(date) => {
+                let tasks = self
+                    .dated_tasks_resource_data(DueDateFilter::Before, &date)
+                    .await?;
+                json_resource(&tasks, normalized_uri)?
+            }
+            ObsidianResourceUri::ProjectStatus(path) => {
+                let status = self.project_status_resource_data(&path).await?;
+                json_resource(&status, normalized_uri)?
             }
         };
 
@@ -287,20 +289,31 @@ impl ObsidianMcp {
 
 fn serialize_resource_json(value: &impl rmcp::serde::Serialize) -> AppResult<String> {
     rmcp::serde_json::to_string_pretty(value).map_err(|error| {
-        ObsidianMcpError::Parse(format!("Cannot serialize Obsidian resource: {error}"))
+        ObsidianMcpError::Parse(format!("Cannot serialize WorkOS resource: {error}"))
     })
+}
+
+fn json_resource(value: &impl rmcp::serde::Serialize, uri: String) -> AppResult<ResourceContents> {
+    Ok(text_resource(
+        serialize_resource_json(value)?,
+        uri,
+        "application/json",
+    ))
 }
 
 fn text_resource(text: String, uri: String, mime_type: &str) -> ResourceContents {
     ResourceContents::text(text, uri).with_mime_type(mime_type)
 }
 
-fn format_tasks_resource(tasks: &[TaskItem]) -> String {
-    tasks
-        .iter()
-        .map(|task| format!("{}:{}\t{}", task.path, task.line, task.text))
-        .collect::<Vec<_>>()
-        .join("\n")
+fn plain_index(lines: Vec<String>, limit: usize) -> String {
+    let total = lines.len();
+    if total <= limit {
+        lines.join("\n")
+    } else {
+        let mut index = lines[..limit].join("\n");
+        index.push_str(&format!("\n# truncated: showing {limit} of {total}"));
+        index
+    }
 }
 
 fn workspace_profile_resource() -> Resource {
@@ -316,81 +329,65 @@ fn workspace_profile_resource() -> Resource {
     .no_annotation()
 }
 
-pub fn workspace_activity() -> Resource {
-    RawResource::new(ObsidianResourceUri::ACTIVITY, "obsidian_vault_audit")
-        .with_title("Obsidian vault graph audit")
-        .with_description("Unresolved links, orphan notes, and dead ends in the Markdown vault.")
+fn workspace_today_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::TODAY, "workos_workspace_today")
+        .with_title("WorkOS today")
+        .with_description(
+            "Today's operational snapshot: daily note plus due, overdue, and daily-note tasks.",
+        )
         .with_mime_type("application/json")
         .no_annotation()
 }
 
-fn vault_audit_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::VAULT_AUDIT, "obsidian_vault_audit")
-        .with_title("Obsidian vault graph audit")
-        .with_description("Unresolved links, orphan notes, and dead ends in the Markdown vault.")
+fn tasks_open_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::TASKS_OPEN, "workos_tasks_open")
+        .with_title("Open tasks")
+        .with_description("All open tasks, normalized with due and scheduled dates.")
         .with_mime_type("application/json")
         .no_annotation()
 }
 
-fn bases_index_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::BASES_INDEX, "obsidian_bases_index")
-        .with_title("Obsidian Bases index")
-        .with_description("Newline-delimited list of Obsidian Base paths in the vault.")
-        .with_mime_type("text/plain")
+fn projects_index_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::PROJECTS_INDEX, "workos_projects_index")
+        .with_title("Projects index")
+        .with_description("Project notes under the configured projects directory.")
+        .with_mime_type("application/json")
         .no_annotation()
 }
 
 fn notes_index_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::NOTES_INDEX, "obsidian_notes_index")
-        .with_title("Obsidian notes index")
-        .with_description("Newline-delimited list of Markdown note paths in the vault.")
+    RawResource::new(ObsidianResourceUri::NOTES_INDEX, "workos_notes_index")
+        .with_title("Notes index")
+        .with_description("Newline-delimited vault-relative paths of all Markdown notes.")
         .with_mime_type("text/plain")
         .no_annotation()
 }
 
 fn tags_index_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::TAGS_INDEX, "obsidian_tags_index")
-        .with_title("Obsidian tags index")
-        .with_description("Newline-delimited tags in the vault, optionally with counts.")
+    RawResource::new(ObsidianResourceUri::TAGS_INDEX, "workos_tags_index")
+        .with_title("Tags index")
+        .with_description("Newline-delimited tags with occurrence counts, sorted by count.")
         .with_mime_type("text/plain")
         .no_annotation()
 }
 
-fn daily_today_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::DAILY_TODAY, "obsidian_daily_today")
-        .with_title("Today's daily note")
-        .with_description("Markdown contents of today's Obsidian daily note.")
-        .with_mime_type("text/markdown")
+fn vault_audit_resource() -> Resource {
+    RawResource::new(ObsidianResourceUri::VAULT_AUDIT, "workos_vault_audit")
+        .with_title("Vault graph audit")
+        .with_description("Knowledge-graph hygiene: unresolved links, orphans, and dead ends.")
+        .with_mime_type("application/json")
         .no_annotation()
-}
-
-fn tasks_open_resource() -> Resource {
-    RawResource::new(ObsidianResourceUri::TASKS_OPEN, "obsidian_tasks_open")
-        .with_title("Open Obsidian tasks")
-        .with_description("Open Markdown tasks with vault-relative path and line references.")
-        .with_mime_type("text/plain")
-        .no_annotation()
-}
-
-fn projects_index_resource() -> Resource {
-    RawResource::new(
-        ObsidianResourceUri::PROJECTS_INDEX,
-        "obsidian_projects_index",
-    )
-    .with_title("Obsidian projects index")
-    .with_description("Markdown project notes under the configured projects directory.")
-    .with_mime_type("text/plain")
-    .no_annotation()
 }
 
 fn write_resource_path(
     formatter: &mut fmt::Formatter<'_>,
     prefix: &str,
     path: &VaultRelativePath,
+    suffix: &str,
 ) -> fmt::Result {
     write!(
         formatter,
-        "{prefix}{}",
+        "{prefix}{}{suffix}",
         percent_encode_uri_path(&path.as_cli_arg())
     )
 }

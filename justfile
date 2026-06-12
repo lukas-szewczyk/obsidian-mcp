@@ -15,4 +15,4 @@ integration:
     OBSIDIAN_VAULT_NAME="test-vault" \
     OBSIDIAN_VAULT_PATH="{{justfile_directory()}}/test-vault" \
     OBSIDIAN_CLI="/Applications/Obsidian.app/Contents/MacOS/obsidian" \
-    cargo test --test resources
+    cargo test --test resources -- --test-threads=1
