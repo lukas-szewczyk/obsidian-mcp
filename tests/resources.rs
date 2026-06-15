@@ -163,11 +163,25 @@ async fn workspace_today_resource_splits_tasks_by_due_date() {
     );
 }
 
+async fn read_resource(server: &ObsidianMcp, uri: &str) -> rmcp::model::ReadResourceResult {
+    // The Obsidian CLI sporadically returns empty stdout under rapid sequential
+    // load, which surfaces as a transient parse/EOF error; retry a few times
+    // before failing, mirroring connected_server's validation retry.
+    let mut last_error = None;
+    for _ in 0..3 {
+        match server.read_resource_uri(uri).await {
+            Ok(result) => return result,
+            Err(error) => {
+                last_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    panic!("{uri} must resolve: {last_error:?}");
+}
+
 async fn read_json(server: &ObsidianMcp, uri: &str) -> rmcp::serde_json::Value {
-    let result = server
-        .read_resource_uri(uri)
-        .await
-        .unwrap_or_else(|error| panic!("{uri} must resolve: {error}"));
+    let result = read_resource(server, uri).await;
     let (resolved_uri, mime_type, text) = text_contents(&result.contents[0]);
     assert_eq!(resolved_uri, uri);
     assert_eq!(mime_type, Some("application/json"));

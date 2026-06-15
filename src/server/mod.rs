@@ -318,6 +318,17 @@ impl ObsidianMcp {
         sort_by_count: bool,
         limit: Option<usize>,
     ) -> AppResult<Vec<String>> {
+        let mut tags = self.scan_tags_data(path, counts, sort_by_count).await?;
+        tags.truncate(clamp_limit(limit, 200, 2_000));
+        Ok(tags)
+    }
+
+    pub(super) async fn scan_tags_data(
+        &self,
+        path: Option<&str>,
+        counts: bool,
+        sort_by_count: bool,
+    ) -> AppResult<Vec<String>> {
         let path = path.map(VaultRelativePath::markdown).transpose()?;
         let mut command = ObsidianCommand::new("tags");
         if let Some(path) = &path {
@@ -330,9 +341,7 @@ impl ObsidianMcp {
             command = command.parameter("sort", "count");
         }
 
-        let mut tags = parse_output_lines(&self.run_cli(command).await?);
-        tags.truncate(clamp_limit(limit, 200, 2_000));
-        Ok(tags)
+        Ok(parse_output_lines(&self.run_cli(command).await?))
     }
 
     pub async fn list_backlinks_data(
@@ -432,6 +441,16 @@ impl ObsidianMcp {
         status: Option<&TaskStatus>,
         limit: Option<usize>,
     ) -> AppResult<Vec<TaskItem>> {
+        let mut tasks = self.scan_tasks_data(target, status).await?;
+        tasks.truncate(clamp_limit(limit, 100, 1_000));
+        Ok(tasks)
+    }
+
+    pub(super) async fn scan_tasks_data(
+        &self,
+        target: &TaskReadTarget,
+        status: Option<&TaskStatus>,
+    ) -> AppResult<Vec<TaskItem>> {
         let mut command = ObsidianCommand::new("tasks").parameter("format", "tsv");
         match target {
             TaskReadTarget::Vault => {}
@@ -445,9 +464,7 @@ impl ObsidianMcp {
             command = task_status_command(command, status)?;
         }
 
-        let mut tasks = parse_tasks_tsv(&self.run_cli(command).await?)?;
-        tasks.truncate(clamp_limit(limit, 100, 1_000));
-        Ok(tasks)
+        parse_tasks_tsv(&self.run_cli(command).await?)
     }
 
     pub async fn create_task_data(

@@ -228,7 +228,7 @@ impl ObsidianMcp {
             }
             ObsidianResourceUri::TagsIndex => {
                 let tags = self
-                    .list_tags_data(None, true, true, Some(TAGS_INDEX_LIMIT))
+                    .scan_tags_data(None, true, true)
                     .await?
                     .into_iter()
                     .map(|line| {

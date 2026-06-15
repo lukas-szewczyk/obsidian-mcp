@@ -113,7 +113,7 @@ impl ObsidianMcp {
         };
 
         let open_tasks = self
-            .list_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo), Some(1_000))
+            .scan_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo))
             .await?;
         let open_total = open_tasks.len();
 
@@ -166,14 +166,11 @@ impl ObsidianMcp {
         })
     }
     pub async fn open_tasks_resource_data(&self) -> AppResult<TasksResource> {
-        let open_tasks = self
-            .list_tasks_data(
-                &TaskReadTarget::Vault,
-                Some(&TaskStatus::Todo),
-                Some(TASKS_LIMIT),
-            )
+        let mut open_tasks = self
+            .scan_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo))
             .await?;
-        let truncated = open_tasks.len() >= TASKS_LIMIT;
+        let truncated = open_tasks.len() > TASKS_LIMIT;
+        open_tasks.truncate(TASKS_LIMIT);
         let tasks: Vec<Task> = open_tasks.iter().map(normalize_task).collect();
 
         Ok(TasksResource {
@@ -190,13 +187,8 @@ impl ObsidianMcp {
         date: &DailyDate,
     ) -> AppResult<DatedTasksResource> {
         let open_tasks = self
-            .list_tasks_data(
-                &TaskReadTarget::Vault,
-                Some(&TaskStatus::Todo),
-                Some(TASKS_LIMIT),
-            )
+            .scan_tasks_data(&TaskReadTarget::Vault, Some(&TaskStatus::Todo))
             .await?;
-        let truncated = open_tasks.len() >= TASKS_LIMIT;
         let mut tasks: Vec<Task> = open_tasks
             .iter()
             .filter(|task| {
@@ -208,6 +200,8 @@ impl ObsidianMcp {
             .map(normalize_task)
             .collect();
         sort_tasks(&mut tasks);
+        let truncated = tasks.len() > TASKS_LIMIT;
+        tasks.truncate(TASKS_LIMIT);
 
         Ok(DatedTasksResource {
             contract: WORKOS_CONTRACT.to_string(),
@@ -256,11 +250,12 @@ impl ObsidianMcp {
                 Some(TASKS_LIMIT),
             )
             .await?;
-        let links = parse_output_lines(
+        let mut links = parse_output_lines(
             &self
                 .run_cli(ObsidianCommand::new("links").parameter("path", &cli_path))
                 .await?,
         );
+        links.truncate(INDEX_LIMIT);
         let backlinks = self
             .list_backlinks_data(&cli_path, true, Some(INDEX_LIMIT))
             .await?;
@@ -466,10 +461,23 @@ fn daily_date_from_path(path: &str) -> AppResult<DailyDate> {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
 
-    DailyDate::parse(stem).map_err(|_| {
-        ObsidianMcpError::Parse(format!(
-            "Cannot parse today's date from daily note path '{path}'; expected a YYYY-MM-DD file name"
-        ))
+    // The daily filename is usually the bare date, but common Obsidian formats
+    // decorate it (e.g. `2026-06-15 Monday`), so fall back to the first embedded
+    // YYYY-MM-DD before giving up.
+    DailyDate::parse(stem)
+        .ok()
+        .or_else(|| first_date_in(stem))
+        .ok_or_else(|| {
+            ObsidianMcpError::Parse(format!(
+                "Cannot parse today's date from daily note path '{path}'; expected a YYYY-MM-DD date in the file name"
+            ))
+        })
+}
+
+fn first_date_in(text: &str) -> Option<DailyDate> {
+    (0..text.len()).find_map(|start| {
+        text.get(start..start + 10)
+            .and_then(|candidate| DailyDate::parse(candidate).ok())
     })
 }
 
@@ -509,16 +517,26 @@ fn task_text_without_checkbox(text: &str) -> &str {
 
 fn strip_date_markers(text: &str) -> String {
     const MARKERS: [&str; 4] = ["📅", "due::", "⏳", "scheduled::"];
+    let is_date = |token: &str| DailyDate::parse(token.trim_end_matches(']')).is_ok();
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let mut kept: Vec<&str> = Vec::new();
     let mut index = 0;
 
     while index < tokens.len() {
-        let is_marker = MARKERS.contains(&tokens[index].trim_start_matches('['));
-        let next_is_date = tokens
-            .get(index + 1)
-            .is_some_and(|next| DailyDate::parse(next.trim_end_matches(']')).is_ok());
-        if is_marker && next_is_date {
+        let bare = tokens[index].trim_start_matches('[');
+
+        // Combined form where the marker and date share one token, e.g. `due::2026-06-03`.
+        let combined = MARKERS.iter().any(|marker| {
+            bare.strip_prefix(marker)
+                .is_some_and(|rest| !rest.is_empty() && is_date(rest))
+        });
+        if combined {
+            index += 1;
+            continue;
+        }
+
+        // Separated form: a marker token followed by a date token.
+        if MARKERS.contains(&bare) && tokens.get(index + 1).is_some_and(|next| is_date(next)) {
             index += 2;
         } else {
             kept.push(tokens[index]);
@@ -546,4 +564,106 @@ fn parse_sync_status(output: &str) -> Option<String> {
         .map(|status| status.trim().to_string())
         .filter(|status| !status.is_empty())
         .or_else(|| first_non_empty([output]).map(str::to_string))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(text: &str, status: &str) -> TaskItem {
+        TaskItem {
+            status: status.to_string(),
+            text: text.to_string(),
+            path: "Notes/Task.md".to_string(),
+            line: 1,
+        }
+    }
+
+    #[test]
+    fn daily_date_tolerates_decorated_filenames() {
+        assert_eq!(
+            daily_date_from_path("Daily/2026-06-15.md")
+                .unwrap()
+                .to_string(),
+            "2026-06-15"
+        );
+        // Common Obsidian formats decorate the date; we still recover it.
+        assert_eq!(
+            daily_date_from_path("Journal/2026-06-15 Monday.md")
+                .unwrap()
+                .to_string(),
+            "2026-06-15"
+        );
+        assert!(daily_date_from_path("Daily/no-date-here.md").is_err());
+    }
+
+    #[test]
+    fn strip_date_markers_handles_spaced_combined_and_bracketed_forms() {
+        assert_eq!(
+            strip_date_markers("Ship release 📅 2026-06-04 ⏳ 2026-06-01"),
+            "Ship release"
+        );
+        // Dataview inline field with no space after `::` must not leak into the text.
+        assert_eq!(strip_date_markers("Pay rent due::2026-06-04"), "Pay rent");
+        assert_eq!(
+            strip_date_markers("Review [due:: 2026-06-04] notes"),
+            "Review notes"
+        );
+        // A bare marker with no following date is preserved.
+        assert_eq!(
+            strip_date_markers("talk about due:: dates"),
+            "talk about due:: dates"
+        );
+    }
+
+    #[test]
+    fn normalize_task_splits_text_dates_and_raw() {
+        let normalized = normalize_task(&task("- [ ] Pay rent due::2026-06-04", " "));
+        assert_eq!(normalized.text, "Pay rent");
+        assert_eq!(normalized.due.as_deref(), Some("2026-06-04"));
+        assert_eq!(normalized.raw, "- [ ] Pay rent due::2026-06-04");
+
+        let plain = normalize_task(&task("Buy milk", "x"));
+        assert_eq!(plain.text, "Buy milk");
+        assert_eq!(plain.raw, "- [x] Buy milk");
+    }
+
+    #[test]
+    fn task_text_without_checkbox_strips_known_states() {
+        assert_eq!(task_text_without_checkbox("- [ ] Do it"), "Do it");
+        assert_eq!(task_text_without_checkbox("- [x] Done"), "Done");
+        assert_eq!(task_text_without_checkbox("- [-] Cancelled"), "Cancelled");
+        assert_eq!(task_text_without_checkbox("No checkbox"), "No checkbox");
+    }
+
+    #[test]
+    fn parse_backlink_line_reads_count_column() {
+        let with_count = parse_backlink_line("Projects/WorkOS MCP.md\t3");
+        assert_eq!(with_count.path, "Projects/WorkOS MCP.md");
+        assert_eq!(with_count.count, 3);
+
+        let without_count = parse_backlink_line("Projects/WorkOS MCP.md");
+        assert_eq!(without_count.path, "Projects/WorkOS MCP.md");
+        assert_eq!(without_count.count, 1);
+    }
+
+    #[test]
+    fn parse_vault_overview_and_sync_status() {
+        let overview = parse_vault_overview(
+            "name\ttest-vault\npath\t/Users/me/test-vault\nfiles\t2\nfolders\t0\nsize\t209\n",
+        )
+        .unwrap();
+        assert_eq!(overview.name, "test-vault");
+        assert_eq!(overview.files, 2);
+        assert!(matches!(
+            parse_vault_overview("name only-name"),
+            Err(ObsidianMcpError::Parse(_))
+        ));
+
+        assert_eq!(
+            parse_sync_status("status: disconnected\nSync is not set up for this vault."),
+            Some("disconnected".to_string())
+        );
+        assert_eq!(parse_sync_status("  \n"), None);
+    }
 }
