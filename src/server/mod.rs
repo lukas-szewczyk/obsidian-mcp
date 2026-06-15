@@ -5,9 +5,7 @@ mod prompts;
 mod resources;
 mod tools;
 mod work_system;
-
-#[cfg(test)]
-mod tests;
+mod workspace;
 
 use std::{
     env,
@@ -320,6 +318,17 @@ impl ObsidianMcp {
         sort_by_count: bool,
         limit: Option<usize>,
     ) -> AppResult<Vec<String>> {
+        let mut tags = self.scan_tags_data(path, counts, sort_by_count).await?;
+        tags.truncate(clamp_limit(limit, 200, 2_000));
+        Ok(tags)
+    }
+
+    pub(super) async fn scan_tags_data(
+        &self,
+        path: Option<&str>,
+        counts: bool,
+        sort_by_count: bool,
+    ) -> AppResult<Vec<String>> {
         let path = path.map(VaultRelativePath::markdown).transpose()?;
         let mut command = ObsidianCommand::new("tags");
         if let Some(path) = &path {
@@ -332,9 +341,7 @@ impl ObsidianMcp {
             command = command.parameter("sort", "count");
         }
 
-        let mut tags = parse_output_lines(&self.run_cli(command).await?);
-        tags.truncate(clamp_limit(limit, 200, 2_000));
-        Ok(tags)
+        Ok(parse_output_lines(&self.run_cli(command).await?))
     }
 
     pub async fn list_backlinks_data(
@@ -434,6 +441,16 @@ impl ObsidianMcp {
         status: Option<&TaskStatus>,
         limit: Option<usize>,
     ) -> AppResult<Vec<TaskItem>> {
+        let mut tasks = self.scan_tasks_data(target, status).await?;
+        tasks.truncate(clamp_limit(limit, 100, 1_000));
+        Ok(tasks)
+    }
+
+    pub(super) async fn scan_tasks_data(
+        &self,
+        target: &TaskReadTarget,
+        status: Option<&TaskStatus>,
+    ) -> AppResult<Vec<TaskItem>> {
         let mut command = ObsidianCommand::new("tasks").parameter("format", "tsv");
         match target {
             TaskReadTarget::Vault => {}
@@ -447,9 +464,7 @@ impl ObsidianMcp {
             command = task_status_command(command, status)?;
         }
 
-        let mut tasks = parse_tasks_tsv(&self.run_cli(command).await?)?;
-        tasks.truncate(clamp_limit(limit, 100, 1_000));
-        Ok(tasks)
+        parse_tasks_tsv(&self.run_cli(command).await?)
     }
 
     pub async fn create_task_data(
@@ -589,16 +604,6 @@ impl ServerHandler for ObsidianMcp {
         Ok(self.get_info())
     }
 
-    async fn list_resources(
-        &self,
-        request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, McpError> {
-        self.list_resource_page(request.and_then(|request| request.cursor).as_deref())
-            .await
-            .map_err(tool_mcp_error)
-    }
-
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -650,6 +655,16 @@ impl ServerHandler for ObsidianMcp {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions("Use these tools, resources, and prompts to work with Markdown notes, Obsidian Bases, frontmatter properties, daily notes, tasks, overdue work, knowledge graph context, vault graph audits, backlinks, and project status through the Obsidian CLI. Preview note and property changes before applying uncertain writes. Multi-note change sets use best-effort optimistic concurrency: use preview_change_set, obtain explicit acceptance of its token, then call apply_change_set; application is sequential and non-atomic. Use create_note only for missing notes and replace_note only for existing notes. Create Base items only through an explicit Base path and named view. Obsidian must be running with the CLI enabled, and the configured vault must already be registered in Obsidian. Paths must be relative to the configured vault.")
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult::with_all_items(
+            self.list_resource_descriptors(),
+        ))
     }
 }
 

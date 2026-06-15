@@ -16,22 +16,7 @@ impl ObsidianMcp {
             open_world_hint = false
         )
     )]
-    async fn vault_info(&self) -> Result<Json<VaultInfoResponse>, McpError> {
-        self.vault_info_data()
-            .await
-            .map(Json)
-            .map_err(tool_mcp_error)
-    }
 
-    #[tool(
-        description = "List Markdown notes in the vault or in a relative vault directory.",
-        annotations(
-            title = "List notes",
-            read_only_hint = true,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
     async fn list_notes(
         &self,
         Parameters(ListNotesRequest { directory, limit }): Parameters<ListNotesRequest>,

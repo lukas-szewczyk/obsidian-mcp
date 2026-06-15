@@ -256,8 +256,16 @@ fn property_type_cli_arg(property_type: &PropertyType) -> &'static str {
     }
 }
 
-fn task_due_date(text: &str) -> Option<DailyDate> {
-    ["📅", "due::"].into_iter().find_map(|marker| {
+pub(super) fn task_due_date(text: &str) -> Option<DailyDate> {
+    task_marker_date(text, &["📅", "due::"])
+}
+
+pub(super) fn task_scheduled_date(text: &str) -> Option<DailyDate> {
+    task_marker_date(text, &["⏳", "scheduled::"])
+}
+
+fn task_marker_date(text: &str, markers: &[&str]) -> Option<DailyDate> {
+    markers.iter().find_map(|marker| {
         let tail = text.split_once(marker)?.1.trim_start();
         let date = tail.get(..10)?;
         DailyDate::parse(date).ok()

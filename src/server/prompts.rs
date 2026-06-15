@@ -140,7 +140,7 @@ impl ObsidianMcp {
             "summarize_note" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let uri = ObsidianResourceUri::note(&normalized_path);
+                let uri = ObsidianResourceUri::Note(normalized_path);
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -160,7 +160,7 @@ impl ObsidianMcp {
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Use the `search_notes` tool to search for `{query}` in the Obsidian vault.{directory_instruction} Read the most relevant `obsidian://note/{{path}}` resources before answering. Cite note paths and keep the synthesis grounded in note contents."
+                        "Use the `search_notes` tool to search for `{query}` in the Obsidian vault.{directory_instruction} Read the most relevant `workos://note/{{path}}` resources before answering. Cite note paths and keep the synthesis grounded in note contents."
                     ),
                 )])
                 .with_description("Search the vault and synthesize matching notes."))
@@ -169,7 +169,7 @@ impl ObsidianMcp {
                 let path = required_prompt_string(&request, "path")?;
                 let intent = required_prompt_string(&request, "intent")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let uri = ObsidianResourceUri::note(&normalized_path);
+                let uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -191,13 +191,13 @@ impl ObsidianMcp {
             }
             "daily_review" => Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 PromptMessageRole::User,
-                "Read `obsidian://daily/today`, summarize today's note, extract commitments and open loops, then propose a short prioritized plan. Do not modify the vault.",
+                "Read `workos://workspace/today`, summarize today's note, extract commitments and open loops, then propose a short prioritized plan. Do not modify the vault.",
             )])
             .with_description("Review today's daily note.")),
             "plan_day" => {
                 let date = DailyDate::parse(&required_prompt_string(&request, "date")?)?;
-                let daily_uri = ObsidianResourceUri::daily(&date);
-                let overdue_uri = ObsidianResourceUri::tasks_overdue(&date);
+                let daily_uri = ObsidianResourceUri::Daily(date.clone());
+                let overdue_uri = ObsidianResourceUri::TasksDueBefore(date.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
@@ -216,7 +216,7 @@ impl ObsidianMcp {
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Use `list_tags` and `search_notes` to investigate `{normalized_tag}`. Read relevant `obsidian://note/{{path}}` resources, then summarize the theme, key notes, stale items, and suggested cleanup. Do not modify the vault."
+                        "Use `list_tags` and `search_notes` to investigate `{normalized_tag}`. Read relevant `workos://note/{{path}}` resources, then summarize the theme, key notes, stale items, and suggested cleanup. Do not modify the vault."
                     ),
                 )])
                 .with_description("Summarize tag usage across the vault."))
@@ -224,12 +224,12 @@ impl ObsidianMcp {
             "backlink_review" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let backlinks_uri = ObsidianResourceUri::backlinks(&normalized_path);
-                let note_uri = ObsidianResourceUri::note(&normalized_path);
+                let note_uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Read `{backlinks_uri}` and the target note `{note_uri}`. Summarize incoming context, important relationships, and follow-up notes worth reading. Do not modify the vault."
+                        "Use `list_backlinks` for `{}` and read the target note `{note_uri}`. Summarize incoming context, important relationships, and follow-up notes worth reading. Do not modify the vault.",
+                        normalized_path.as_cli_arg()
                     ),
                 )])
                 .with_description("Review backlinks for one note."))
@@ -246,7 +246,7 @@ impl ObsidianMcp {
                     PromptMessageRole::User,
                     format!(
                         "Use `read_daily_notes` from `{from}` to `{to}`, read `{}`, and use `list_tasks` with status `{{\"type\":\"todo\"}}`. Review commitments, overdue and unfinished tasks, recurring themes, stale items, active project risks, and a short next-week plan. Use `get_project_status` for relevant project notes. Do not modify the vault.",
-                        ObsidianResourceUri::tasks_overdue(&to)
+                        ObsidianResourceUri::TasksDueBefore(to.clone())
                     ),
                 )])
                 .with_description("Review daily notes and open tasks for a date range."))
@@ -254,12 +254,11 @@ impl ObsidianMcp {
             "project_review" => {
                 let path = required_prompt_string(&request, "path")?;
                 let normalized_path = VaultRelativePath::markdown(&path)?;
-                let note_uri = ObsidianResourceUri::note(&normalized_path);
-                let backlinks_uri = ObsidianResourceUri::backlinks(&normalized_path);
+                let note_uri = ObsidianResourceUri::Note(normalized_path.clone());
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                     PromptMessageRole::User,
                     format!(
-                        "Use `get_project_status` for `{}`. Read project note `{note_uri}` and backlinks `{backlinks_uri}` only when more detail is needed. Summarize current state, properties, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
+                        "Use `get_project_status` for `{}`. Read project note `{note_uri}` and use `list_backlinks` only when more relationship detail is needed. Summarize current state, properties, risks, decisions, open tasks, and the next concrete actions. Do not modify the vault.",
                         normalized_path.as_cli_arg()
                     ),
                 )])
@@ -276,7 +275,7 @@ impl ObsidianMcp {
                         )
                     })
                     .unwrap_or_else(|| {
-                        " Also inspect `obsidian://tasks/open` for task inbox candidates."
+                        " Also inspect `workos://tasks/open` for task inbox candidates."
                             .to_string()
                     });
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
@@ -289,7 +288,7 @@ impl ObsidianMcp {
             }
             "vault_audit" => Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 PromptMessageRole::User,
-                "Read `obsidian://vault/audit`. Group unresolved links, orphan notes, and dead ends by impact. Use `get_note_context` only for the highest-impact notes when more relationship detail is needed. Recommend concrete link or organization improvements, cite note paths, and do not modify the vault.",
+                "Read `workos://vault/audit`. Group unresolved links, orphan notes, and dead ends by impact. Use `get_note_context` only for the highest-impact notes when more relationship detail is needed. Recommend concrete link or organization improvements, cite note paths, and do not modify the vault.",
             )])
             .with_description("Audit the vault knowledge graph and recommend improvements.")),
             "base_review" => {

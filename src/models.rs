@@ -227,6 +227,180 @@ pub struct VaultInfoResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileServer {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileVault {
+    pub name: String,
+    pub path: String,
+    pub files: usize,
+    pub folders: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileSync {
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileConventions {
+    pub projects_dir: String,
+    pub daily_path_format: String,
+    pub task_date_syntax: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileCapabilities {
+    pub projects: bool,
+    pub daily: bool,
+    pub bases: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProfileSystem {
+    pub obsidian_version: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct WorkspaceProfileResponse {
+    pub contract: String,
+    pub server: ProfileServer,
+    pub vault: ProfileVault,
+    pub sync: ProfileSync,
+    pub conventions: ProfileConventions,
+    pub bases: Vec<String>,
+    pub capabilities: ProfileCapabilities,
+    pub system: ProfileSystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct Task {
+    pub path: String,
+    pub line: usize,
+    pub text: String,
+    pub status: String,
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    pub raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct TodayTasks {
+    pub due_today: Vec<Task>,
+    pub overdue: Vec<Task>,
+    pub in_daily_note: Vec<Task>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct DailyNote {
+    pub path: String,
+    pub exists: bool,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct TodayCounts {
+    pub due_today: usize,
+    pub overdue: usize,
+    pub open_total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct WorkspaceTodayResponse {
+    pub contract: String,
+    pub date: String,
+    pub daily_note: DailyNote,
+    pub tasks: TodayTasks,
+    pub counts: TodayCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct TasksResource {
+    pub contract: String,
+    pub count: usize,
+    pub truncated: bool,
+    pub tasks: Vec<Task>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct DatedTasksResource {
+    pub contract: String,
+    pub date: String,
+    pub op: String,
+    pub count: usize,
+    pub truncated: bool,
+    pub tasks: Vec<Task>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectIndexItem {
+    pub path: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectsIndexResource {
+    pub contract: String,
+    pub count: usize,
+    pub truncated: bool,
+    pub projects: Vec<ProjectIndexItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct BacklinkItem {
+    pub path: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct NoteContextResource {
+    pub contract: String,
+    pub path: String,
+    pub content: String,
+    #[schemars(schema_with = "any_json_value_schema")]
+    pub properties: rmcp::serde_json::Value,
+    pub tags: Vec<String>,
+    pub tasks: Vec<Task>,
+    pub links: Vec<String>,
+    pub backlinks: Vec<BacklinkItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct ProjectStatusResource {
+    pub contract: String,
+    pub path: String,
+    pub title: String,
+    #[schemars(schema_with = "any_json_value_schema")]
+    pub properties: rmcp::serde_json::Value,
+    pub open_tasks: Vec<Task>,
+    pub open_task_count: usize,
+    pub backlink_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct VaultAuditResource {
+    pub contract: String,
+    pub unresolved: Vec<UnresolvedLinkItem>,
+    pub orphans: Vec<String>,
+    pub deadends: Vec<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, rmcp::serde::Serialize, schemars::JsonSchema)]
+pub struct BaseQueryResource {
+    pub contract: String,
+    pub path: String,
+    pub view: Option<String>,
+    pub count: usize,
+    pub truncated: bool,
+    pub results: Vec<rmcp::serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, rmcp::serde::Serialize, schemars::JsonSchema)]
 pub struct ListNotesResponse {
     pub directory: Option<String>,
     pub notes: Vec<String>,
